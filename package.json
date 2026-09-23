@@ -1,0 +1,37 @@
+{
+    "name": "remote-ssh-cmd",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Standalone stdio MCP server that exposes SSH host storage and remote command execution as MCP tools. Sibling to the FastAPI app in this monorepo; launched via `npx`.",
+    "type": "module",
+    "bin": {
+        "remote-ssh-server": "./dist/index.js",
+        "remote-ssh-cli": "./dist/cli.js"
+    },
+    "main": "./dist/index.js",
+    "files": [
+        "dist",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.json",
+        "start": "node dist/index.js",
+        "dev": "tsc -p tsconfig.json --watch",
+        "test": "node test/smoke.mjs && node test/mcp_smoke.mjs",
+        "tui": "node dist/cli.js"
+    },
+    "engines": {
+        "node": ">=18.17.0"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.4",
+        "ssh2": "^1.16.0",
+        "zod": "^3.23.8",
+        "zod-to-json-schema": "^3.23.2"
+    },
+    "devDependencies": {
+        "@types/node": "^20.14.0",
+        "@types/ssh2": "^1.15.0",
+        "typescript": "^5.5.0"
+    }
+}
