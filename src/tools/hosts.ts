@@ -72,10 +72,10 @@ export function buildHostTools(store: HostStore, pool?: ConnectionPool): McpTool
         {
             name: "host_list",
             description:
-                "List SSH hosts known to the server. Only the host id and IP " +
-                "address are returned — no credentials, user names or ports. " +
-                "Use this to discover the host_id values accepted by the SSH " +
-                "execution tools.",
+                "List SSH hosts known to the server. Each entry contains only " +
+                "the host name (sys_name) and its unique id (uid) — no " +
+                "credentials, addresses, user names or ports. Use the 'uid' " +
+                "value as the host_id argument of the SSH execution tools.",
             schema: hostListSchema,
             handler: async (raw) => {
                 const args = z.object(hostListSchema).parse(raw ?? {});
@@ -83,7 +83,7 @@ export function buildHostTools(store: HostStore, pool?: ConnectionPool): McpTool
                 const items = (args.enabled_only
                     ? all.filter((h) => h.is_enable)
                     : all
-                ).map((h) => ({ id: h.id, ip_address: h.ip_address }));
+                ).map((h) => ({ sys_name: h.system_name, uid: h.id }));
                 return {
                     content: [
                         { type: "text", text: JSON.stringify({ items, total: items.length }) },

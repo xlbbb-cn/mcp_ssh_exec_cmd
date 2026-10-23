@@ -17,7 +17,7 @@
 | 工具 | 说明 |
 |---|---|
 | `cli_help` | 返回 `remote-ssh-cli` 的安装 / 用法 / 排障说明（按 topic 分节） |
-| `host_list` | 列出所有主机（**只返回 `id` 与 `ip_address`**，不含任何凭据） |
+| `host_list` | 列出所有主机（**只返回 `sys_name` 与 `uid`**，不含地址 / 用户名 / 凭据；`uid` 即 `host_id`） |
 | `host_get` | 获取单个主机的公开信息（不含凭据） |
 | `host_create` | 新增一台主机（密码 / 私钥 / 私钥口令会被加密落盘） |
 | `host_update` | 更新主机字段（未提供的凭据字段保持原值） |

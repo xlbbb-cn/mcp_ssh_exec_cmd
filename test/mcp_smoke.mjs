@@ -157,7 +157,7 @@ try {
     console.log(`  ✓ host_create: id=${created.host.id.slice(0, 8)}…`);
 
     // 6) call host_list again — should now be 1, and only expose
-    //    the host id and IP address.
+    //    the host name (sys_name) and the unique id (uid).
     const listId2 = send("tools/call", { name: "host_list", arguments: {} });
     const list2 = await ok(listId2);
     const items2 = JSON.parse(list2.content[0].text).items;
@@ -165,13 +165,16 @@ try {
         throw new Error(`expected 1 host, got ${items2.length}`);
     }
     const keys = Object.keys(items2[0]).sort();
-    if (keys.length !== 2 || keys[0] !== "id" || keys[1] !== "ip_address") {
+    if (keys.length !== 2 || keys[0] !== "sys_name" || keys[1] !== "uid") {
         throw new Error(`host_list exposed unexpected fields: ${keys.join(",")}`);
     }
-    if (items2[0].ip_address !== "127.0.0.1") {
-        throw new Error(`host_list ip_address=${items2[0].ip_address}`);
+    if (items2[0].uid !== created.host.id) {
+        throw new Error(`host_list uid=${items2[0].uid} != created id`);
     }
-    console.log(`  ✓ host_list: 1 host persisted, only id + ip_address exposed`);
+    if (items2[0].sys_name !== "smoke") {
+        throw new Error(`host_list sys_name=${items2[0].sys_name}`);
+    }
+    console.log(`  ✓ host_list: 1 host persisted, only sys_name + uid exposed`);
 
     // 7) call host_get — should not contain password
     const getId = send("tools/call", {

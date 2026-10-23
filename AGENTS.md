@@ -26,7 +26,7 @@ Standalone stdio MCP server (TypeScript/ESM) for local SSH host storage and remo
 
 - Node16 ESM resolution: relative imports in `src/` must use `.js` extensions (e.g. `./storage.js`).
 - stdout is the MCP transport. Log only to stderr; a stray `console.log` corrupts the protocol.
-- `host_list` deliberately exposes **only** `id` and `ip_address`. Do not widen it — `host_get` is the tool for full public metadata. Credentials never leave the server; `ssh_run_*` resolves them by `host_id`.
+- `host_list` deliberately exposes **only** `sys_name` and `uid` (the host's UUID, i.e. the value the SSH tools expect as `host_id`). Do not widen it — `host_get` is the tool for full public metadata. Credentials never leave the server; `ssh_run_*` resolves them by `host_id`.
 - `ssh_run_*` requires `timeout_seconds` (1-600) and rejects `is_enable=false` hosts. The timeout is a **hard cap**: a command still running when it expires is terminated (`success=false`, `exit_code=null`). For `ssh_run_playbook` it is the budget for the *whole* playbook — each step only gets the remaining time.
 - The pool keys on host id **plus a credential fingerprint**; changing the password/key/address rotates the connection. `host_update` / `host_delete` also invalidate it explicitly — keep that in place when adding tools that mutate hosts.
 - Default state dir is `~/.mcp-ssh-server`, overridden by `MCP_SSH_CONFIG_DIR`. It holds `hosts.json` (plaintext metadata + encrypted credential fields) and `master.key`. `MCP_SSH_MASTER_KEY` must be 64 hex chars (32 bytes); changing it makes existing credentials undecryptable.
