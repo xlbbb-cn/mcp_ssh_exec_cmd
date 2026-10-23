@@ -371,6 +371,16 @@ git push github v0.1.1
 Without either the `NPM_TOKEN` secret or a configured trusted publisher the
 npmjs.org job fails with an actionable error message.
 
+The fallback token can be created from the CLI (it needs your 2FA code once):
+
+```bash
+npm token create --scopes=xlbbb-cn --packages-and-scopes-permission=read-write \
+                 --bypass-2fa --otp=<your-2fa-code>
+```
+
+`--bypass-2fa` is what keeps npm from asking for a one-time password on every
+publish; without it the registry answers with `EOTP`.
+
 Once trusted publishing works, the `NPM_TOKEN` secret can be deleted and the
 package's *Publishing access* can be set to *"Require two-factor
 authentication and disallow tokens"*.

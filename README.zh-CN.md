@@ -247,6 +247,15 @@ git push github v0.1.1
 
 `NPM_TOKEN` secret 和 trusted publisher 都没有时，npmjs.org 那个 job 会带着可操作的报错信息失败。
 
+兜底用的 token 可以直接用 CLI 签发（只需要输入一次 2FA 验证码）：
+
+```bash
+npm token create --scopes=xlbbb-cn --packages-and-scopes-permission=read-write \
+                 --bypass-2fa --otp=<你的 2FA 验证码>
+```
+
+`--bypass-2fa` 正是让 npm 不再每次都要一次性密码的开关；不加它 registry 就会回 `EOTP`。
+
 trusted publisher 跑通后就可以删掉 `NPM_TOKEN` secret，并把包的 *Publishing access* 设为
 *"Require two-factor authentication and disallow tokens"*。
 
