@@ -242,10 +242,13 @@ git push github v0.1.1
 | Registry | 凭据 | 来源 |
 |---|---|---|
 | GitHub Packages | `GITHUB_TOKEN` | workflow 内置，无需配置 |
-| npmjs.org | `NPM_TOKEN` | 仓库 secret（*Settings → Secrets and variables → Actions*），一个有 `@xlbbb-cn` scope 发布权限的 classic npm automation token |
+| npmjs.org | trusted publishing（OIDC） | 在 npmjs.org 上配置一次：*Packages → `@xlbbb-cn/mcp_ssh_exec_cmd` → Settings → Trusted publisher* → user `xlbbb-cn`、repository `mcp_ssh_exec_cmd`、workflow 文件名 `publish.yml`。**不需要任何 secret** —— workflow 用短期的 GitHub OIDC token 换取发布 token |
+| npmjs.org（兜底） | `NPM_TOKEN` | 仓库 secret（*Settings → Secrets and variables → Actions*）。必须是 **granular** token，对 `@xlbbb-cn` scope 有 *Read and write* 权限，并且打开 **Bypass 2FA** —— 普通用户 token 会让 npm 报 `EOTP`（要求一次性密码）。只在 trusted publisher 配好之前需要 |
 
-没有 `NPM_TOKEN` secret 时，npmjs.org 那个 job 会打一条 warning 并跳过发布，
-GitHub Packages 的发布照常进行。
+`NPM_TOKEN` secret 和 trusted publisher 都没有时，npmjs.org 那个 job 会带着可操作的报错信息失败。
+
+trusted publisher 跑通后就可以删掉 `NPM_TOKEN` secret，并把包的 *Publishing access* 设为
+*"Require two-factor authentication and disallow tokens"*。
 
 也可以在 **Actions** 页面手动触发（`workflow_dispatch`），勾选 `dry_run` 只校验 tarball、不真正发布。
 

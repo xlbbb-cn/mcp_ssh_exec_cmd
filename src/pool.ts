@@ -147,7 +147,22 @@ interface PoolEntry {
     active: number;
     broken: boolean;
     idleTimer: NodeJS.Timeout | null;
+    /** When the connection was opened (epoch ms). */
+    createdAt: number;
     lastUsed: number;
+}
+
+/** Read-only view of one pooled connection (used by the CLI monitor). */
+export interface PoolEntryInfo {
+    hostId: string;
+    /** Number of in-flight operations using this connection. */
+    active: number;
+    /** When the connection was opened (epoch ms). */
+    createdAt: number;
+    /** When the connection was last used (epoch ms). */
+    lastUsed: number;
+    /** True when the connection reported an error / closed. */
+    broken: boolean;
 }
 
 /** A borrowed connection.  Call ``release()`` when the operation is done. */
@@ -176,6 +191,25 @@ export class ConnectionPool {
     /** Number of currently pooled connections. */
     get size(): number {
         return this.entries.size;
+    }
+
+    /** The pool limits (idle timeout, maximum number of hosts). */
+    get limits(): { idleMs: number; maxHosts: number } {
+        return { ...this.config };
+    }
+
+    /**
+     * Snapshot of the pooled connections — used by the CLI monitor to
+     * render the pool state.  The clients themselves are never exposed.
+     */
+    snapshot(): PoolEntryInfo[] {
+        return [...this.entries.values()].map((entry) => ({
+            hostId: entry.hostId,
+            active: entry.active,
+            createdAt: entry.createdAt,
+            lastUsed: entry.lastUsed,
+            broken: entry.broken,
+        }));
     }
 
     /**
@@ -224,6 +258,7 @@ export class ConnectionPool {
                 active: 0,
                 broken: false,
                 idleTimer: null,
+                createdAt: Date.now(),
                 lastUsed: Date.now(),
             };
             this.entries.set(creds.id, entry);

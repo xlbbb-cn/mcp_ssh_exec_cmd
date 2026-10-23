@@ -365,10 +365,15 @@ git push github v0.1.1
 | Registry | Credential | Where it comes from |
 |---|---|---|
 | GitHub Packages | `GITHUB_TOKEN` | built into the workflow, nothing to configure |
-| npmjs.org | `NPM_TOKEN` | repository secret (*Settings → Secrets and variables → Actions*), a classic npm automation token with publish rights for the `@xlbbb-cn` scope |
+| npmjs.org | trusted publishing (OIDC) | configured once on npmjs.org: *Packages → `@xlbbb-cn/mcp_ssh_exec_cmd` → Settings → Trusted publisher* → user `xlbbb-cn`, repository `mcp_ssh_exec_cmd`, workflow filename `publish.yml`. **No secret needed** — the workflow exchanges the short-lived GitHub OIDC token for a publish token. |
+| npmjs.org (fallback) | `NPM_TOKEN` | repository secret (*Settings → Secrets and variables → Actions*). Must be a **granular** npm token with *Read and write* on the `@xlbbb-cn` scope and **Bypass 2FA** enabled — a regular user token makes npm answer with `EOTP` (one-time password required). Only needed until the trusted publisher is set up. |
 
-Without the `NPM_TOKEN` secret the npmjs.org job logs a warning and skips the
-publish — the GitHub Packages publish still happens.
+Without either the `NPM_TOKEN` secret or a configured trusted publisher the
+npmjs.org job fails with an actionable error message.
+
+Once trusted publishing works, the `NPM_TOKEN` secret can be deleted and the
+package's *Publishing access* can be set to *"Require two-factor
+authentication and disallow tokens"*.
 
 The workflow can also be started by hand from the **Actions** tab
 (`workflow_dispatch`); tick `dry_run` to verify the tarball without publishing.

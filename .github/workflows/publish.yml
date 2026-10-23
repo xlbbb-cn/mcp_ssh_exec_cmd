@@ -1,15 +1,25 @@
 name: Publish to GitHub Packages and npmjs
 
 # Publishes the package to two registries:
-#   * GitHub Packages �?https://npm.pkg.github.com  (GITHUB_TOKEN)
-#   * npmjs.org       �?https://registry.npmjs.org (NPM_TOKEN secret)
+#   * GitHub Packages - https://npm.pkg.github.com  (GITHUB_TOKEN)
+#   * npmjs.org       - https://registry.npmjs.org (trusted publishing)
 #
 # GitHub Packages uses the built-in GITHUB_TOKEN, so nothing has to be
-# stored in the repository for it. npmjs.org needs an npm token in the
-# repository secret "NPM_TOKEN"; without that secret the npmjs job
-# skips the publish instead of failing. If 2FA is enabled on the npm
-# account the token has to be an *automation* token - a regular user
-# token makes npmjs.org answer with EOTP (one-time password required).
+# stored in the repository for it.
+#
+# npmjs.org is published with *trusted publishing* (OIDC): the npm CLI
+# exchanges the short-lived GitHub Actions OIDC token for a publish
+# token, so no long-lived secret is needed either. It requires
+#   - npm CLI >= 11.5.1 and Node >= 22.14.0
+#   - "id-token: write" (set below)
+#   - a trusted publisher configured on npmjs.com for this package:
+#     user/organization "xlbbb-cn", repository "mcp_ssh_exec_cmd",
+#     workflow filename "publish.yml"
+#
+# A classic token in the repository secret "NPM_TOKEN" is still honoured
+# as a fallback for the very first publish (before the trusted publisher
+# exists) - it must be a granular token with "Read and write" access on
+# the @xlbbb-cn scope and "Bypass 2FA" enabled.
 #
 # Trigger it by pushing a version tag:
 #     git tag v0.1.0 && git push github v0.1.0
@@ -29,7 +39,7 @@ on:
 permissions:
   contents: read
   packages: write
-  id-token: write # required for npm provenance
+  id-token: write # required for npm provenance and trusted publishing
 
 jobs:
   publish-github-packages:
@@ -43,7 +53,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://npm.pkg.github.com
           scope: "@xlbbb-cn"
 
@@ -90,15 +100,34 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
+          node-version: 24
           scope: "@xlbbb-cn"
+
+      # Trusted publishing needs npm >= 11.5.1; the npm bundled with
+      # Node 24 is new enough, but upgrade explicitly so the workflow
+      # keeps working when the runner image changes.
+      - name: Make sure npm supports trusted publishing
+        run: npm install -g npm@latest
 
       # The repository .npmrc routes the @xlbbb-cn scope to GitHub
       # Packages. A scope mapping wins over --registry, so it has to be
       # overridden explicitly for the npmjs.org publish.
       - name: Point the scope at npmjs.org
         run: npm config set @xlbbb-cn:registry https://registry.npmjs.org --location=project
+
+      # Trusted publishing (OIDC) needs no token at all. The NPM_TOKEN
+      # secret is only a fallback for the first publish, before the
+      # trusted publisher exists on npmjs.com.
+      - name: Configure the npm credentials
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> .npmrc
+            echo "using the NPM_TOKEN secret (fallback)"
+          else
+            echo "no NPM_TOKEN secret - publishing through trusted publishing (OIDC)"
+          fi
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Install dependencies
         run: npm ci --allow-scripts=ssh2,cpu-features
@@ -109,29 +138,14 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Look for the npm token
-        id: token
-        run: |
-          if [ -n "$NPM_TOKEN" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No NPM_TOKEN secret found - skipping the npmjs.org publish. Add one under Settings > Secrets and variables > Actions."
-          fi
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       - name: Verify package contents
-        if: ${{ steps.token.outputs.present == 'true' }}
         run: npm publish --dry-run --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish
-        if: ${{ steps.token.outputs.present == 'true' && !inputs.dry_run }}
+        if: ${{ !inputs.dry_run }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          echo "npm account behind NPM_TOKEN: $(npm whoami --registry=https://registry.npmjs.org || echo 'unknown')"
+          echo "npm account: $(npm whoami --registry=https://registry.npmjs.org || echo 'unknown (expected with trusted publishing)')"
           set +e
           npm publish --provenance --access public 2>&1 | tee publish.log
           code=${PIPESTATUS[0]}
@@ -142,12 +156,13 @@ jobs:
               exit 0
             fi
             if grep -q "one-time password\|EOTP" publish.log; then
-              echo "::error::npmjs.org demanded a one-time password (EOTP). With 2FA enabled the NPM_TOKEN secret has to be an *automation* token (npmjs.org > Access Tokens > Generate New Token > Automation), not a regular user token."
+              echo "::error::npmjs.org demanded a one-time password (EOTP). The NPM_TOKEN secret must be a granular token with 'Bypass 2FA' enabled - or drop the secret entirely and configure a trusted publisher on npmjs.com."
             fi
             if grep -qi "you do not have permission to publish under the" publish.log; then
-              echo "::error::The npm account behind NPM_TOKEN does not own the @xlbbb-cn scope. Either publish under a scope that account owns, or switch the package to an unscoped name."
+              echo "::error::The npm account behind NPM_TOKEN does not own the @xlbbb-cn scope."
+            fi
+            if grep -qi "unable to authenticate\|ENEEDAUTH\|404 Not Found" publish.log; then
+              echo "::error::npmjs.org rejected the credentials. Either the NPM_TOKEN secret is wrong, or no trusted publisher is configured for this package (npmjs.com > Packages > @xlbbb-cn/mcp_ssh_exec_cmd > Settings > Trusted publishing)."
             fi
             exit $code
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

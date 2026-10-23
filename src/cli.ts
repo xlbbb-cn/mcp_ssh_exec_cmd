@@ -3,10 +3,23 @@
 import { HostStore } from "./storage.js";
 import { loadMasterKey } from "./master_key.js";
 import { importHostCsv } from "./importer.js";
+import { ConnectionPool } from "./pool.js";
+import {
+    DEFAULT_INTERVAL_MS,
+    DEFAULT_PROBE_COMMAND,
+    DEFAULT_PROBE_TIMEOUT_S,
+    createSshProbe,
+    runPoolMonitor,
+} from "./monitor.js";
 import * as fs from "fs";
 import * as readline from "readline";
 
 const USAGE = "usage: remote-ssh-cli <command> [args]";
+
+/** Usage line of the `monitor` subcommand. */
+const MONITOR_USAGE =
+    `${USAGE} monitor [--interval <ms>] [--timeout <s>] [--probe-cmd <cmd>] ` +
+    `[--host <host_id>] [--all] [--once]`;
 
 /** Header row expected by `remote-ssh-cli import`. */
 const CSV_TEMPLATE_HEADER =
