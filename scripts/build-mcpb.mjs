@@ -20,6 +20,14 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const stage = join(root, ".mcpb-bundle");
 const out = join(root, `mcp-ssh-exec-cmd-${pkg.version}.mcpb`);
 
+// `npm run` exports npm_config_* into this process; npm >= 11.9 treats an
+// inherited npm_config_allow_scripts as a CLI-layer policy and refuses
+// project installs with EALLOWSCRIPTS. Strip the inherited config so the
+// inner npm falls back to its own npmrc/package.json layers.
+const cleanEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !/^npm_config_/i.test(k)),
+);
+
 if (!existsSync(join(root, "dist", "index.js"))) {
     console.error("dist/index.js not found - run `npm run build` first.");
     process.exit(1);
@@ -71,17 +79,24 @@ const manifest = {
 };
 writeFileSync(join(stage, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 
-// Bundle only production dependencies; ignore lifecycle scripts so the
-// optional ssh2 native build can never break the bundle (pure-JS fallback).
-execSync("npm install --omit=dev --ignore-scripts --no-audit --no-fund", {
+// Bundle only production dependencies. Lifecycle scripts are governed by
+// the local allowScripts config; the ssh2 native build stays optional
+// (pure-JS fallback) so it can never break the bundle.
+execSync("npm install --omit=dev --no-audit --no-fund", {
     cwd: stage,
     stdio: "inherit",
+    env: cleanEnv,
 });
 
 execSync(`npx --yes @anthropic-ai/mcpb validate "${join(stage, "manifest.json")}"`, {
     cwd: root,
     stdio: "inherit",
+    env: cleanEnv,
 });
 rmSync(out, { force: true });
-execSync(`npx --yes @anthropic-ai/mcpb pack "${stage}" "${out}"`, { cwd: root, stdio: "inherit" });
+execSync(`npx --yes @anthropic-ai/mcpb pack "${stage}" "${out}"`, {
+    cwd: root,
+    stdio: "inherit",
+    env: cleanEnv,
+});
 console.log(`packed ${out}`);

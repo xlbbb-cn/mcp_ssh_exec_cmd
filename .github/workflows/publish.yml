@@ -72,7 +72,18 @@ jobs:
         run: npm test
 
       - name: Verify package contents
-        run: npm publish --dry-run --access public
+        run: |
+          set +e
+          npm publish --dry-run --access public 2>&1 | tee verify.log
+          code=${PIPESTATUS[0]}
+          set -e
+          # The dry-run conflicts when this version is already on the
+          # registry (re-runs / workflow_dispatch) - that is not a failure.
+          if [ $code -ne 0 ] && grep -qE "Cannot publish over existing version|previously published versions" verify.log; then
+            echo "::notice::this version already exists on GitHub Packages - the dry-run conflict is expected."
+            code=0
+          fi
+          exit $code
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,7 +155,18 @@ jobs:
         run: npm test
 
       - name: Verify package contents
-        run: npm publish --dry-run --access public
+        run: |
+          set +e
+          npm publish --dry-run --access public 2>&1 | tee verify.log
+          code=${PIPESTATUS[0]}
+          set -e
+          # The dry-run conflicts when this version is already on the
+          # registry (re-runs / workflow_dispatch) - that is not a failure.
+          if [ $code -ne 0 ] && grep -qE "Cannot publish over existing version|previously published versions" verify.log; then
+            echo "::notice::this version already exists on npmjs.org - the dry-run conflict is expected."
+            code=0
+          fi
+          exit $code
 
       - name: Publish
         if: ${{ !inputs.dry_run }}
