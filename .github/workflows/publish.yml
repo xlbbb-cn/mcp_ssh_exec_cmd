@@ -1,8 +1,13 @@
-name: Publish to GitHub Packages
+name: Publish to GitHub Packages and npmjs
 
-# Publishes the package to the GitHub Packages npm registry
-# (https://npm.pkg.github.com) using the built-in GITHUB_TOKEN, so no
-# long-lived secret has to be stored in the repository.
+# Publishes the package to two registries:
+#   * GitHub Packages — https://npm.pkg.github.com  (GITHUB_TOKEN)
+#   * npmjs.org       — https://registry.npmjs.org (NPM_TOKEN secret)
+#
+# GitHub Packages uses the built-in GITHUB_TOKEN, so nothing has to be
+# stored in the repository for it. npmjs.org needs a classic npm
+# automation token in the repository secret "NPM_TOKEN"; without that
+# secret the npmjs job skips the publish instead of failing.
 #
 # Trigger it by pushing a version tag:
 #     git tag v0.1.0 && git push github v0.1.0
@@ -25,8 +30,8 @@ permissions:
   id-token: write # required for npm provenance
 
 jobs:
-  publish:
-    name: Build, test and publish
+  publish-github-packages:
+    name: Publish to GitHub Packages
     runs-on: ubuntu-latest
 
     steps:
@@ -59,3 +64,57 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-npmjs:
+    name: Publish to npmjs.org
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          scope: "@xlbbb-cn"
+
+      # The repository .npmrc routes the @xlbbb-cn scope to GitHub
+      # Packages. A scope mapping wins over --registry, so it has to be
+      # overridden explicitly for the npmjs.org publish.
+      - name: Point the scope at npmjs.org
+        run: npm config set @xlbbb-cn:registry https://registry.npmjs.org --location=project
+
+      - name: Install dependencies
+        run: npm ci --allow-scripts=ssh2,cpu-features
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Look for the npm token
+        id: token
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No NPM_TOKEN secret found - skipping the npmjs.org publish. Add one under Settings > Secrets and variables > Actions."
+          fi
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify package contents
+        if: ${{ steps.token.outputs.present == 'true' }}
+        run: npm publish --dry-run --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish
+        if: ${{ steps.token.outputs.present == 'true' && !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

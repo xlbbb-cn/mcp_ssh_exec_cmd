@@ -1,6 +1,6 @@
 name: Verify published package
 
-# Installs the package straight from GitHub Packages and exercises it:
+# Installs the package straight from the registry and exercises it:
 # the published version, the MCP server handshake and the advertised tools.
 # Runs on demand and once a week, so a broken publish is noticed early.
 
@@ -14,7 +14,7 @@ permissions:
   packages: read
 
 jobs:
-  verify:
+  verify-github-packages:
     name: Install from GitHub Packages and smoke-test it
     runs-on: ubuntu-latest
 
@@ -45,3 +45,40 @@ jobs:
         run: node test/verify_published.mjs
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify-npmjs:
+    name: Install from npmjs.org and smoke-test it
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          scope: "@xlbbb-cn"
+
+      # The repository .npmrc routes the @xlbbb-cn scope to GitHub
+      # Packages; a scope mapping wins over --registry.
+      - name: Point the scope at npmjs.org
+        run: npm config set @xlbbb-cn:registry https://registry.npmjs.org --location=project
+
+      - name: Check whether the package is on npmjs.org
+        id: check
+        continue-on-error: true
+        run: npm view @xlbbb-cn/mcp_ssh_exec_cmd version
+
+      - name: Install the published package
+        if: steps.check.outcome == 'success'
+        run: npm install @xlbbb-cn/mcp_ssh_exec_cmd --no-save
+
+      - name: Exercise the published package
+        if: steps.check.outcome == 'success'
+        run: node test/verify_published.mjs
+
+      - name: Not published on npmjs.org yet
+        if: steps.check.outcome != 'success'
+        run: echo "::notice::@xlbbb-cn/mcp_ssh_exec_cmd is not on npmjs.org yet - skipping."

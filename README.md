@@ -84,18 +84,18 @@ The build output lands in `dist/` and provides two binaries:
 | `remote-ssh-server` | `dist/index.js` | the stdio MCP server (started by your MCP client) |
 | `remote-ssh-cli` | `dist/cli.js` | interactive / batch host-management CLI |
 
-### Install from GitHub Packages
+### Install
 
-The package is published to the **GitHub Packages** npm registry as
+The package is published to two registries under the same name,
 `@xlbbb-cn/mcp_ssh_exec_cmd`:
 
-```bash
-npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
-```
+| Registry | Install command | Auth |
+|---|---|---|
+| **npmjs.org** (recommended) | `npm install -g @xlbbb-cn/mcp_ssh_exec_cmd` | none — the public registry needs no token |
+| **GitHub Packages** | `npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com` | a personal access token (classic) with `read:packages` |
 
 GitHub Packages requires authentication for installs as well — even for public
-packages — so give npm a personal access token (classic) with the
-`read:packages` scope first:
+packages — so give npm a token first:
 
 ```bash
 npm login --scope=@xlbbb-cn --auth-type=legacy --registry=https://npm.pkg.github.com
@@ -119,10 +119,11 @@ npm run build
 npm install -g --allow-scripts=ssh2,cpu-features .
 ```
 
-Or straight from GitHub Packages:
+Or straight from a registry:
 
 ```bash
-npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd                                      # npmjs.org
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com  # GitHub Packages
 ```
 
 Afterwards `remote-ssh-cli` is on your `PATH`:
@@ -192,16 +193,22 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
   "mcpServers": {
     "ssh": {
       "command": "npx",
-      "args": [
-        "--registry=https://npm.pkg.github.com",
-        "-y",
-        "-p",
-        "@xlbbb-cn/mcp_ssh_exec_cmd",
-        "remote-ssh-server"
-      ]
+      "args": ["-y", "-p", "@xlbbb-cn/mcp_ssh_exec_cmd", "remote-ssh-server"]
     }
   }
 }
+```
+
+On GitHub Packages, add the registry to the same snippet:
+
+```json
+"args": [
+  "--registry=https://npm.pkg.github.com",
+  "-y",
+  "-p",
+  "@xlbbb-cn/mcp_ssh_exec_cmd",
+  "remote-ssh-server"
+]
 ```
 
 The `file:` form points `npx` straight at your local checkout — handy while
@@ -342,10 +349,9 @@ a temporary `MCP_SSH_CONFIG_DIR`, so your real `hosts.json` is never touched.
 
 ## Releasing
 
-Releases are published to **GitHub Packages** by a GitHub Actions workflow
-(`.github/workflows/publish.yml`). It builds, runs the smoke tests and
-publishes with the built-in `GITHUB_TOKEN` — no long-lived secret is stored in
-the repository — and npm provenance is attached to the tarball.
+Releases are published to **npmjs.org** *and* **GitHub Packages** by a GitHub
+Actions workflow (`.github/workflows/publish.yml`). Both jobs build, run the
+smoke tests and publish with npm provenance attached to the tarball.
 
 ```bash
 # 1. bump the version in package.json, commit
@@ -356,11 +362,23 @@ git tag v0.1.1
 git push github v0.1.1
 ```
 
+| Registry | Credential | Where it comes from |
+|---|---|---|
+| GitHub Packages | `GITHUB_TOKEN` | built into the workflow, nothing to configure |
+| npmjs.org | `NPM_TOKEN` | repository secret (*Settings → Secrets and variables → Actions*), a classic npm automation token with publish rights for the `@xlbbb-cn` scope |
+
+Without the `NPM_TOKEN` secret the npmjs.org job logs a warning and skips the
+publish — the GitHub Packages publish still happens.
+
 The workflow can also be started by hand from the **Actions** tab
 (`workflow_dispatch`); tick `dry_run` to verify the tarball without publishing.
 
-The resulting package shows up under
-<https://github.com/xlbbb-cn/mcp_ssh_exec_cmd/packages>.
+The published packages show up under
+<https://github.com/xlbbb-cn/mcp_ssh_exec_cmd/packages> and
+<https://www.npmjs.com/package/@xlbbb-cn/mcp_ssh_exec_cmd>.
+
+> Publishing to npmjs.org requires an npm account that owns the `@xlbbb-cn`
+> scope (an npm user or organization named `xlbbb-cn`).
 
 ## Relation to the FastAPI backend
 

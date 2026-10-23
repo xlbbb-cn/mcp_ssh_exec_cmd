@@ -49,13 +49,14 @@ npm run build
 | `remote-ssh-server` | `dist/index.js` | stdio MCP 服务器（被 MCP 客户端启动） |
 | `remote-ssh-cli` | `dist/cli.js` | 交互式 / 命令行主机管理 TUI |
 
-### 从 GitHub Packages 安装
+### 安装
 
-包已发布到 **GitHub Packages** 的 npm registry，包名为 `@xlbbb-cn/mcp_ssh_exec_cmd`：
+包以同名 `@xlbbb-cn/mcp_ssh_exec_cmd` 发布到了两个 registry：
 
-```bash
-npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
-```
+| Registry | 安装命令 | 是否需要认证 |
+|---|---|---|
+| **npmjs.org**（推荐） | `npm install -g @xlbbb-cn/mcp_ssh_exec_cmd` | 不需要 —— 公共 registry 不需要 token |
+| **GitHub Packages** | `npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com` | 需要带 `read:packages` 权限的 personal access token (classic) |
 
 GitHub Packages 即使对公开包也要求先认证：准备一个带 `read:packages` 权限的
 personal access token (classic)，然后登录：
@@ -82,10 +83,11 @@ npm run build
 npm install -g --allow-scripts=ssh2,cpu-features .
 ```
 
-或直接从 GitHub Packages 安装：
+或直接从 registry 安装：
 
 ```bash
-npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd                                      # npmjs.org
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com  # GitHub Packages
 ```
 
 之后可直接使用 `remote-ssh-cli` 命令管理 SSH 主机：
@@ -141,16 +143,22 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
   "mcpServers": {
     "ssh": {
       "command": "npx",
-      "args": [
-        "--registry=https://npm.pkg.github.com",
-        "-y",
-        "-p",
-        "@xlbbb-cn/mcp_ssh_exec_cmd",
-        "remote-ssh-server"
-      ]
+      "args": ["-y", "-p", "@xlbbb-cn/mcp_ssh_exec_cmd", "remote-ssh-server"]
     }
   }
 }
+```
+
+如果装的是 GitHub Packages 上的那份，snippet 里再加一个 registry 参数：
+
+```json
+"args": [
+  "--registry=https://npm.pkg.github.com",
+  "-y",
+  "-p",
+  "@xlbbb-cn/mcp_ssh_exec_cmd",
+  "remote-ssh-server"
+]
 ```
 
 > 仓库内首次使用推荐用 `file:./mcp_ssh_exec_cmd` 让 npx 直接走本地源码（完全不需要 registry）：
@@ -218,9 +226,9 @@ node test/mcp_smoke.mjs
 
 ## 发布
 
-发布走 **GitHub Packages**，由 GitHub Actions 工作流（`.github/workflows/publish.yml`）完成：
-它会构建、跑冒烟测试，再用内置的 `GITHUB_TOKEN` 发布 —— 仓库里不需要存放任何长期密钥 ——
-同时给 tarball 附上 npm provenance。
+发布由 GitHub Actions 工作流（`.github/workflows/publish.yml`）同时推到
+**npmjs.org** 和 **GitHub Packages**：两个 job 都会构建、跑冒烟测试，并给 tarball
+附上 npm provenance。
 
 ```bash
 # 1. 在 package.json 里改版本号并提交
@@ -231,9 +239,20 @@ git tag v0.1.1
 git push github v0.1.1
 ```
 
+| Registry | 凭据 | 来源 |
+|---|---|---|
+| GitHub Packages | `GITHUB_TOKEN` | workflow 内置，无需配置 |
+| npmjs.org | `NPM_TOKEN` | 仓库 secret（*Settings → Secrets and variables → Actions*），一个有 `@xlbbb-cn` scope 发布权限的 classic npm automation token |
+
+没有 `NPM_TOKEN` secret 时，npmjs.org 那个 job 会打一条 warning 并跳过发布，
+GitHub Packages 的发布照常进行。
+
 也可以在 **Actions** 页面手动触发（`workflow_dispatch`），勾选 `dry_run` 只校验 tarball、不真正发布。
 
-发布结果见 <https://github.com/xlbbb-cn/mcp_ssh_exec_cmd/packages>。
+发布结果见 <https://github.com/xlbbb-cn/mcp_ssh_exec_cmd/packages> 和
+<https://www.npmjs.com/package/@xlbbb-cn/mcp_ssh_exec_cmd>。
+
+> 发到 npmjs.org 需要有一个拥有 `@xlbbb-cn` scope 的 npm 账号（名为 `xlbbb-cn` 的 npm 用户或组织）。
 
 ## 与 FastAPI 后端的关系
 
