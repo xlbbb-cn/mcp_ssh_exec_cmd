@@ -80,7 +80,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           if [ $code -ne 0 ]; then
-            if grep -q "Cannot publish over existing version" publish.log; then
+            if grep -qE "Cannot publish over existing version|previously published versions" publish.log; then
               echo "::notice::version $VERSION is already published on GitHub Packages - nothing to do."
               exit 0
             fi
@@ -107,7 +107,7 @@ jobs:
       # Node 24 is new enough, but upgrade explicitly so the workflow
       # keeps working when the runner image changes.
       - name: Make sure npm supports trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g "npm@^11"
 
       # The repository .npmrc routes the @xlbbb-cn scope to GitHub
       # Packages. A scope mapping wins over --registry, so it has to be
@@ -151,7 +151,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           if [ $code -ne 0 ]; then
-            if grep -q "Cannot publish over existing version" publish.log; then
+            if grep -qE "Cannot publish over existing version|previously published versions" publish.log; then
               echo "::notice::version $VERSION is already published on npmjs.org - nothing to do."
               exit 0
             fi
