@@ -1,19 +1,25 @@
 /**
- * MCP tool definitions for SSH host CRUD.
+ * MCP tool definitions for SSH host management.
  *
- * These mirror the host-side of the Python ``llm_tools`` registry
- * (``host_list``, ``host_get_login``) and add the missing management
- * half (``host_create`` / ``host_update`` / ``host_delete``) so the
- * MCP server can be used as the single source of truth for host
- * credentials when running outside the FastAPI app.
+ * These mirror the host-side of the Python ``llm_tools`` registry and
+ * add the management half (``host_create`` / ``host_update`` /
+ * ``host_delete``) so the MCP server can be used as the single source
+ * of truth for host credentials when running outside the FastAPI app.
  *
- * Security: every response strips credentials.  Credentials are only
- * ever decrypted inside :mod:`../ssh` when an SSH tool actually needs
- * them, and the SSH tool responses never include the password or
- * private key either.
+ * Exposure policy: the model only ever sees ``sys_name`` + ``uid`` per
+ * host (``host_list``).  Single-host metadata lookups are deliberately
+ * NOT exposed as an MCP tool, and no response contains credentials.
+ * Credentials are only ever decrypted inside :mod:`../ssh` when an SSH
+ * tool actually needs them, and the SSH tool responses never include
+ * the password or private key either.
  */
 import { z } from "zod";
-import type { McpTool } from "./_types.js";
+import {
+    HOST_ID_DESCRIPTION,
+    HOST_LIST_HINT,
+    hostNotFoundError,
+    type McpTool,
+} from "./_types.js";
 import type { HostStore } from "../storage.js";
 import type { ConnectionPool } from "../pool.js";
 
@@ -34,34 +40,30 @@ const hostCreateSchema = {
 };
 
 const hostUpdateSchema = {
-    host_id: z.string().describe("ID of the host to update."),
-    ip_address: z.string().optional(),
-    system_name: z.string().optional(),
-    ssh_port: z.number().int().min(1).max(65535).optional(),
-    ssh_username: z.string().optional(),
-    ssh_auth_method: AuthMethod.optional(),
+    host_id: z.string().describe(HOST_ID_DESCRIPTION),
+    ip_address: z.string().optional().describe("New IP address or hostname. Omit to keep the current value."),
+    system_name: z.string().optional().describe("New human-readable name. Omit to keep the current value."),
+    ssh_port: z.number().int().min(1).max(65535).optional().describe("New SSH port (1-65535). Omit to keep the current value."),
+    ssh_username: z.string().optional().describe("New SSH username. Omit to keep the current value."),
+    ssh_auth_method: AuthMethod.optional().describe("New auth method ('password' or 'pubkey'). Omit to keep the current value."),
     ssh_password: z.string().optional().describe("New plaintext password. Omit to keep current value."),
     ssh_private_key: z.string().optional().describe("New plaintext private key. Omit to keep current value."),
     ssh_private_key_passphrase: z.string().optional().describe("New passphrase for the private key. Omit to keep current value."),
-    is_enable: z.boolean().optional(),
+    is_enable: z.boolean().optional().describe("Enable or disable the host. Omit to keep the current value."),
 };
 
 const hostDeleteSchema = {
-    host_id: z.string().describe("ID of the host to delete."),
+    host_id: z.string().describe(HOST_ID_DESCRIPTION),
 };
 
 const hostListSchema = {
     enabled_only: z.boolean().optional().describe("Only return enabled hosts."),
 };
 
-const hostGetSchema = {
-    host_id: z.string().describe("ID of the host to fetch."),
-};
-
 // ── tool factory ──────────────────────────────────────────────────────────
 
 /**
- * Build the host CRUD tools.
+ * Build the host management tools.
  *
  * `pool` is optional; when supplied, host updates and deletions also
  * drop the cached SSH connection for that host so the next command
@@ -72,10 +74,11 @@ export function buildHostTools(store: HostStore, pool?: ConnectionPool): McpTool
         {
             name: "host_list",
             description:
-                "List SSH hosts known to the server. Each entry contains only " +
-                "the host name (sys_name) and its unique id (uid) — no " +
-                "credentials, addresses, user names or ports. Use the 'uid' " +
-                "value as the host_id argument of the SSH execution tools.",
+                "List the SSH hosts known to the server. Each entry contains " +
+                "exactly two fields: 'sys_name' (the host name) and 'uid' " +
+                "(its unique identifier). Start here: pass a 'uid' value to " +
+                "the other tools as their host_id argument. No address, " +
+                "port, user name or credential is returned.",
             schema: hostListSchema,
             handler: async (raw) => {
                 const args = z.object(hostListSchema).parse(raw ?? {});
@@ -92,33 +95,13 @@ export function buildHostTools(store: HostStore, pool?: ConnectionPool): McpTool
             },
         },
         {
-            name: "host_get",
-            description:
-                "Get the public metadata for a single host by id. " +
-                "Returns the address, port, user name, auth method and " +
-                "enable flag — never the password or private key. " +
-                "Use host_id-based SSH tools; credentials are resolved server-side.",
-            schema: hostGetSchema,
-            handler: async (raw) => {
-                const args = z.object(hostGetSchema).parse(raw);
-                const host = await store.getPublicById(args.host_id);
-                if (!host) {
-                    throw new Error(`Host ${args.host_id} not found`);
-                }
-                return {
-                    content: [
-                        { type: "text", text: JSON.stringify(host) },
-                    ],
-                };
-            },
-        },
-        {
             name: "host_create",
             description:
                 "Create a new SSH host entry. The supplied password or " +
                 "private key is encrypted at rest and never returned by " +
-                "any tool. The response only contains the new host's public " +
-                "metadata plus its generated id.",
+                "any tool. The response contains the new host's public " +
+                "metadata, including the uid that identifies it in " +
+                "`host_list`.",
             schema: hostCreateSchema,
             handler: async (raw) => {
                 const args = z.object(hostCreateSchema).parse(raw);
@@ -133,16 +116,18 @@ export function buildHostTools(store: HostStore, pool?: ConnectionPool): McpTool
         {
             name: "host_update",
             description:
-                "Update fields on an existing host. Omit a credential " +
-                "field to keep the current value. Supply an empty string " +
-                "to clear it (only valid if you also flip the auth method).",
+                "Update fields on an existing host. " +
+                HOST_LIST_HINT +
+                " Omit a credential field to keep the current value. " +
+                "Supply an empty string to clear it (only valid if you " +
+                "also flip the auth method).",
             schema: hostUpdateSchema,
             handler: async (raw) => {
                 const args = z.object(hostUpdateSchema).parse(raw);
                 const { host_id, ...patch } = args;
                 const host = await store.update(host_id, patch);
                 if (!host) {
-                    throw new Error(`Host ${host_id} not found`);
+                    throw hostNotFoundError(host_id);
                 }
                 // A cached SSH connection for this host may have been
                 // opened with the previous credentials — drop it.
@@ -158,7 +143,8 @@ export function buildHostTools(store: HostStore, pool?: ConnectionPool): McpTool
         },
         {
             name: "host_delete",
-            description: "Permanently delete a host entry.",
+            description:
+                "Permanently delete a host entry. " + HOST_LIST_HINT,
             schema: hostDeleteSchema,
             handler: async (raw) => {
                 const args = z.object(hostDeleteSchema).parse(raw);

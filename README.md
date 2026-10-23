@@ -18,7 +18,6 @@
 |---|---|
 | `cli_help` | 返回 `remote-ssh-cli` 的安装 / 用法 / 排障说明（按 topic 分节） |
 | `host_list` | 列出所有主机（**只返回 `sys_name` 与 `uid`**，不含地址 / 用户名 / 凭据；`uid` 即 `host_id`） |
-| `host_get` | 获取单个主机的公开信息（不含凭据） |
 | `host_create` | 新增一台主机（密码 / 私钥 / 私钥口令会被加密落盘） |
 | `host_update` | 更新主机字段（未提供的凭据字段保持原值） |
 | `host_delete` | 删除主机 |
@@ -26,7 +25,12 @@
 | `ssh_run_interactive` | 在指定主机上执行需要 expect/answer 提示的命令（sudo 等） |
 | `ssh_run_playbook` | 在指定主机上跑多步骤 playbook（结构化 `# @on` / 旧式 `expect:`/`answer:` 都支持） |
 
-`host_get_login`（Python 端的安全包装）等价于 `host_get` —— 本服务从设计上就不向 LLM 暴露凭据。
+### 主机标识（口径）
+
+- `host_list` 是入口：每台主机只返回 `sys_name`（名字）与 `uid`（唯一标识）。
+- 其余所有工具用 `host_id` 指向某台主机，**它的值就是 `host_list` 返回的 `uid`**，原样传回，不要自行拼接或改写。
+- `host_id` 传错时，工具会返回 `Host '<id>' not found. host_id must be the exact 'uid' value returned by host_list ...`，按提示重新 `host_list` 即可。
+- `host_get`（Python 端的 `host_get_login` 安全包装）**不对 MCP 客户端开放**：本服务从设计上就不向 LLM 暴露单台主机的元数据与凭据，LLM 侧只保留 `sys_name` + `uid`。
 
 ## 快速开始
 

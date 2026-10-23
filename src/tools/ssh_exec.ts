@@ -15,7 +15,7 @@ import { z } from "zod";
 import { SshConnectionError, runCommand, runInteractiveCommand, runPlaybook } from "../ssh.js";
 import type { HostStore } from "../storage.js";
 import type { ConnectionPool } from "../pool.js";
-import type { McpTool } from "./_types.js";
+import { HOST_ID_DESCRIPTION, HOST_LIST_HINT, hostNotFoundError, type McpTool } from "./_types.js";
 
 // ── shared schema bits ────────────────────────────────────────────────────
 
@@ -63,13 +63,14 @@ export function buildSshTools(store: HostStore, pool?: ConnectionPool): McpTool[
             name: "ssh_run_command",
             description:
                 "Run a single non-interactive shell command on a remote host. " +
-                "Returns stdout, stderr, exit code, and duration. The model " +
-                "must use host_id only; connection credentials are resolved " +
-                "server-side and never returned. The model MUST supply " +
-                "timeout_seconds (1-600) appropriate for the command; the " +
-                "command is terminated when the timeout expires.",
+                "Returns stdout, stderr, exit code, and duration. " +
+                HOST_LIST_HINT +
+                " The model must use host_id only; connection credentials " +
+                "are resolved server-side and never returned. The model MUST " +
+                "supply timeout_seconds (1-600) appropriate for the command; " +
+                "the command is terminated when the timeout expires.",
             schema: {
-                host_id: z.string().describe("ID of a host from the catalogue."),
+                host_id: z.string().describe(HOST_ID_DESCRIPTION),
                 command: z.string().describe("Shell command to execute on the remote host."),
                 timeout_seconds: timeoutSeconds,
             },
@@ -82,10 +83,11 @@ export function buildSshTools(store: HostStore, pool?: ConnectionPool): McpTool[
                     })
                     .parse(raw);
                 const creds = await store.getCredsById(args.host_id);
-                if (!creds) throw new Error(`Host ${args.host_id} not found`);
+                if (!creds) throw hostNotFoundError(args.host_id);
                 if (!creds.is_enable) {
                     throw new Error(
-                        `Host ${args.host_id} is disabled; enable it before running commands`,
+                        `Host '${args.host_id}' is disabled; enable it with ` +
+                        `host_update (is_enable=true) before running commands`,
                     );
                 }
                 try {
@@ -112,11 +114,13 @@ export function buildSshTools(store: HostStore, pool?: ConnectionPool): McpTool[
                 "Run a command on a remote host that needs to consume " +
                 "expect/answer prompts (e.g. sudo). Each entry in 'expects' " +
                 "is an object with 'expect' (the prompt text to wait for) and " +
-                "'answer' (the response to send back). Use host_id only; " +
-                "credentials are resolved server-side. The model MUST supply " +
-                "timeout_seconds (1-600) appropriate for the command.",
+                "'answer' (the response to send back). " +
+                HOST_LIST_HINT +
+                " The model must use host_id only; credentials are resolved " +
+                "server-side. The model MUST supply timeout_seconds (1-600) " +
+                "appropriate for the command.",
             schema: {
-                host_id: z.string().describe("ID of a host from the catalogue."),
+                host_id: z.string().describe(HOST_ID_DESCRIPTION),
                 command: z.string().describe("Command to execute on the remote host."),
                 expects: z
                     .array(
@@ -142,10 +146,11 @@ export function buildSshTools(store: HostStore, pool?: ConnectionPool): McpTool[
                     })
                     .parse(raw);
                 const creds = await store.getCredsById(args.host_id);
-                if (!creds) throw new Error(`Host ${args.host_id} not found`);
+                if (!creds) throw hostNotFoundError(args.host_id);
                 if (!creds.is_enable) {
                     throw new Error(
-                        `Host ${args.host_id} is disabled; enable it before running commands`,
+                        `Host '${args.host_id}' is disabled; enable it with ` +
+                        `host_update (is_enable=true) before running commands`,
                     );
                 }
                 try {
@@ -181,12 +186,14 @@ export function buildSshTools(store: HostStore, pool?: ConnectionPool): McpTool[
                 "Legacy format (one command per line with optional " +
                 "'expect:'/'answer:' pairs) is also supported. Stops on the " +
                 "first non-zero exit code and returns the transcript of " +
-                "every step that ran. Use host_id only; credentials are " +
+                "every step that ran. " +
+                HOST_LIST_HINT +
+                " The model must use host_id only; credentials are " +
                 "resolved server-side. The model MUST supply timeout_seconds " +
                 "(1-600) — it is the budget for the WHOLE playbook, each " +
                 "step only gets the time that is left.",
             schema: {
-                host_id: z.string().describe("ID of a host from the catalogue."),
+                host_id: z.string().describe(HOST_ID_DESCRIPTION),
                 content: z
                     .string()
                     .describe(
@@ -205,10 +212,11 @@ export function buildSshTools(store: HostStore, pool?: ConnectionPool): McpTool[
                     })
                     .parse(raw);
                 const creds = await store.getCredsById(args.host_id);
-                if (!creds) throw new Error(`Host ${args.host_id} not found`);
+                if (!creds) throw hostNotFoundError(args.host_id);
                 if (!creds.is_enable) {
                     throw new Error(
-                        `Host ${args.host_id} is disabled; enable it before running commands`,
+                        `Host '${args.host_id}' is disabled; enable it with ` +
+                        `host_update (is_enable=true) before running commands`,
                     );
                 }
                 try {

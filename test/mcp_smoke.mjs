@@ -25,7 +25,6 @@ const child = spawn(process.execPath, [serverPath], {
 const expected = new Set([
     "cli_help",
     "host_list",
-    "host_get",
     "host_create",
     "host_update",
     "host_delete",
@@ -176,19 +175,33 @@ try {
     }
     console.log(`  ✓ host_list: 1 host persisted, only sys_name + uid exposed`);
 
-    // 7) call host_get — should not contain password
-    const getId = send("tools/call", {
-        name: "host_get",
-        arguments: { host_id: created.host.id },
-    });
-    const getRes = await ok(getId);
-    const getPayload = JSON.parse(getRes.content[0].text);
-    if (JSON.stringify(getPayload).includes("sup3r-secret")) {
-        throw new Error("host_get leaked the password!");
+    // 7) host_get must NOT be exposed to MCP clients
+    if (names.has("host_get")) {
+        throw new Error("host_get is exposed but must not be published to MCP");
     }
-    console.log(`  ✓ host_get: password not leaked`);
+    console.log(`  ✓ host_get: not advertised to MCP`);
 
-    // 8) call ssh_run_command against 127.0.0.1:22 — this will
+    // 8) an unknown host_id must produce an actionable error that
+    //    points the model back at host_list
+    const badId = send("tools/call", {
+        name: "ssh_run_command",
+        arguments: {
+            host_id: "not-a-real-uid",
+            command: "echo hello",
+            timeout_seconds: 3,
+        },
+    });
+    const badRes = await ok(badId);
+    if (!badRes.isError) {
+        throw new Error("ssh_run_command with an unknown host_id should fail");
+    }
+    const badText = badRes.content[0].text;
+    if (!badText.includes("host_list")) {
+        throw new Error(`error should mention host_list: ${badText}`);
+    }
+    console.log(`  ✓ ssh_run_command: unknown host_id error points at host_list`);
+
+    // 9) call ssh_run_command against 127.0.0.1:22 — this will
     //    (correctly) fail to connect, but the error should be a
     //    structured tool error, not a crash.
     const sshId = send("tools/call", {
@@ -212,7 +225,7 @@ try {
         console.log(`  ✓ ssh_run_command: connected & ran (live sshd on 127.0.0.1:22)`);
     }
 
-    // 9) clean up
+    // 10) clean up
     const delId = send("tools/call", {
         name: "host_delete",
         arguments: { host_id: created.host.id },
