@@ -5,9 +5,11 @@ name: Publish to GitHub Packages and npmjs
 #   * npmjs.org       �?https://registry.npmjs.org (NPM_TOKEN secret)
 #
 # GitHub Packages uses the built-in GITHUB_TOKEN, so nothing has to be
-# stored in the repository for it. npmjs.org needs a classic npm
-# automation token in the repository secret "NPM_TOKEN"; without that
-# secret the npmjs job skips the publish instead of failing.
+# stored in the repository for it. npmjs.org needs an npm token in the
+# repository secret "NPM_TOKEN"; without that secret the npmjs job
+# skips the publish instead of failing. If 2FA is enabled on the npm
+# account the token has to be an *automation* token - a regular user
+# token makes npmjs.org answer with EOTP (one-time password required).
 #
 # Trigger it by pushing a version tag:
 #     git tag v0.1.0 && git push github v0.1.0
@@ -64,12 +66,12 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           set +e
-          npm publish --provenance --access public
-          code=$?
+          npm publish --provenance --access public 2>&1 | tee publish.log
+          code=${PIPESTATUS[0]}
           set -e
           if [ $code -ne 0 ]; then
-            if npm view @xlbbb-cn/mcp_ssh_exec_cmd versions --json 2>/dev/null | grep -q "\"$VERSION\""; then
-              echo "::notice::version $VERSION is already published on this registry - nothing to do."
+            if grep -q "Cannot publish over existing version" publish.log; then
+              echo "::notice::version $VERSION is already published on GitHub Packages - nothing to do."
               exit 0
             fi
             exit $code
@@ -129,14 +131,21 @@ jobs:
         if: ${{ steps.token.outputs.present == 'true' && !inputs.dry_run }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          echo "npm account behind NPM_TOKEN: $(npm whoami --registry=https://registry.npmjs.org || echo 'unknown')"
           set +e
-          npm publish --provenance --access public
-          code=$?
+          npm publish --provenance --access public 2>&1 | tee publish.log
+          code=${PIPESTATUS[0]}
           set -e
           if [ $code -ne 0 ]; then
-            if npm view @xlbbb-cn/mcp_ssh_exec_cmd versions --json 2>/dev/null | grep -q "\"$VERSION\""; then
-              echo "::notice::version $VERSION is already published on this registry - nothing to do."
+            if grep -q "Cannot publish over existing version" publish.log; then
+              echo "::notice::version $VERSION is already published on npmjs.org - nothing to do."
               exit 0
+            fi
+            if grep -q "one-time password\|EOTP" publish.log; then
+              echo "::error::npmjs.org demanded a one-time password (EOTP). With 2FA enabled the NPM_TOKEN secret has to be an *automation* token (npmjs.org > Access Tokens > Generate New Token > Automation), not a regular user token."
+            fi
+            if grep -qi "you do not have permission to publish under the" publish.log; then
+              echo "::error::The npm account behind NPM_TOKEN does not own the @xlbbb-cn scope. Either publish under a scope that account owns, or switch the package to an unscoped name."
             fi
             exit $code
           fi
