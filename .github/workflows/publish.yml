@@ -1,8 +1,8 @@
 name: Publish to GitHub Packages and npmjs
 
 # Publishes the package to two registries:
-#   * GitHub Packages â€?https://npm.pkg.github.com  (GITHUB_TOKEN)
-#   * npmjs.org       â€?https://registry.npmjs.org (NPM_TOKEN secret)
+#   * GitHub Packages ï¿½?https://npm.pkg.github.com  (GITHUB_TOKEN)
+#   * npmjs.org       ï¿½?https://registry.npmjs.org (NPM_TOKEN secret)
 #
 # GitHub Packages uses the built-in GITHUB_TOKEN, so nothing has to be
 # stored in the repository for it. npmjs.org needs a classic npm
@@ -61,7 +61,19 @@ jobs:
 
       - name: Publish
         if: ${{ !inputs.dry_run }}
-        run: npm publish --provenance --access public
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          set +e
+          npm publish --provenance --access public
+          code=$?
+          set -e
+          if [ $code -ne 0 ]; then
+            if npm view @xlbbb-cn/mcp_ssh_exec_cmd versions --json 2>/dev/null | grep -q "\"$VERSION\""; then
+              echo "::notice::version $VERSION is already published on this registry - nothing to do."
+              exit 0
+            fi
+            exit $code
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -115,6 +127,18 @@ jobs:
 
       - name: Publish
         if: ${{ steps.token.outputs.present == 'true' && !inputs.dry_run }}
-        run: npm publish --provenance --access public
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          set +e
+          npm publish --provenance --access public
+          code=$?
+          set -e
+          if [ $code -ne 0 ]; then
+            if npm view @xlbbb-cn/mcp_ssh_exec_cmd versions --json 2>/dev/null | grep -q "\"$VERSION\""; then
+              echo "::notice::version $VERSION is already published on this registry - nothing to do."
+              exit 0
+            fi
+            exit $code
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
