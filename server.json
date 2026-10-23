@@ -3,7 +3,7 @@
   "name": "io.github.xlbbb-cn/mcp-ssh-exec-cmd",
   "title": "SSH Host Storage & Remote Exec",
   "description": "Stdio MCP server for SSH host storage and remote command execution with a connection-pool monitor.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "repository": {
     "url": "https://github.com/xlbbb-cn/mcp_ssh_exec_cmd",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@xlbbb-cn/mcp_ssh_exec_cmd",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "transport": {
         "type": "stdio"
       },
