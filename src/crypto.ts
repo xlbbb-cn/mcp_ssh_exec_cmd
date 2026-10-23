@@ -6,7 +6,7 @@
  * PBKDF2-SHA-256 (200k iterations, 16-byte random salt).  The
  * ciphertext layout is:
  *
- *     [ 16 bytes salt ][ 12 bytes iv ][ N bytes ciphertext+tag ]
+ *     [ 16 bytes salt ][ 12 bytes iv ][ 16 bytes tag ][ N bytes ciphertext ]
  *
  * Both salt and IV are regenerated for every encryption call, so the
  * same plaintext always yields a different ciphertext.
@@ -72,14 +72,4 @@ export function decryptSecret(token: string, master: Buffer): string {
         decipher.final(),
     ]);
     return plaintext.toString("utf8");
-}
-
-/**
- * Return a UI-safe masked representation of a secret.
- * Mirrors the Python ``mask_secret`` helper in app/core/crypto.py.
- */
-export function maskSecret(plaintext: string): string {
-    if (!plaintext) return "";
-    if (plaintext.length <= 8) return "***";
-    return `${plaintext.slice(0, 3)}***${plaintext.slice(-4)}`;
 }

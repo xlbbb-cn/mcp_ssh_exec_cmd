@@ -14,6 +14,7 @@
 import { z } from "zod";
 import { SshConnectionError, runCommand, runInteractiveCommand, runPlaybook } from "../ssh.js";
 import type { HostStore } from "../storage.js";
+import type { ConnectionPool } from "../pool.js";
 import type { McpTool } from "./_types.js";
 
 // ── shared schema bits ────────────────────────────────────────────────────
@@ -24,9 +25,10 @@ const timeoutSeconds = z
     .min(1)
     .max(600)
     .describe(
-        "Per-command timeout in seconds. REQUIRED. The model must " +
+        "Hard timeout in seconds. REQUIRED. The model must " +
         "estimate an appropriate timeout based on the command's " +
-        "complexity (1-600 seconds).",
+        "complexity (1-600 seconds). The command is terminated when " +
+        "the timeout expires.",
     );
 
 function summarise(result: { stdout: string; stderr: string; exit_code: number | null; success: boolean; duration_ms: number }): string {
@@ -55,7 +57,7 @@ function toolError(prefix: string, err: unknown) {
 
 // ── tool factory ──────────────────────────────────────────────────────────
 
-export function buildSshTools(store: HostStore): McpTool[] {
+export function buildSshTools(store: HostStore, pool?: ConnectionPool): McpTool[] {
     return [
         {
             name: "ssh_run_command",
@@ -64,7 +66,8 @@ export function buildSshTools(store: HostStore): McpTool[] {
                 "Returns stdout, stderr, exit code, and duration. The model " +
                 "must use host_id only; connection credentials are resolved " +
                 "server-side and never returned. The model MUST supply " +
-                "timeout_seconds (1-600) appropriate for the command.",
+                "timeout_seconds (1-600) appropriate for the command; the " +
+                "command is terminated when the timeout expires.",
             schema: {
                 host_id: z.string().describe("ID of a host from the catalogue."),
                 command: z.string().describe("Shell command to execute on the remote host."),
@@ -88,6 +91,7 @@ export function buildSshTools(store: HostStore): McpTool[] {
                 try {
                     const r = await runCommand(creds, args.command, {
                         timeoutSeconds: args.timeout_seconds,
+                        pool,
                     });
                     return {
                         content: [
@@ -149,7 +153,7 @@ export function buildSshTools(store: HostStore): McpTool[] {
                         creds,
                         args.command,
                         args.expects ?? [],
-                        { timeoutSeconds: args.timeout_seconds },
+                        { timeoutSeconds: args.timeout_seconds, pool },
                     );
                     return {
                         content: [
@@ -179,7 +183,8 @@ export function buildSshTools(store: HostStore): McpTool[] {
                 "first non-zero exit code and returns the transcript of " +
                 "every step that ran. Use host_id only; credentials are " +
                 "resolved server-side. The model MUST supply timeout_seconds " +
-                "(1-600) appropriate for the playbook.",
+                "(1-600) — it is the budget for the WHOLE playbook, each " +
+                "step only gets the time that is left.",
             schema: {
                 host_id: z.string().describe("ID of a host from the catalogue."),
                 content: z
@@ -209,6 +214,7 @@ export function buildSshTools(store: HostStore): McpTool[] {
                 try {
                     const r = await runPlaybook(creds, args.content, {
                         timeoutSeconds: args.timeout_seconds,
+                        pool,
                     });
                     const lines: string[] = [];
                     for (const step of r.results) {

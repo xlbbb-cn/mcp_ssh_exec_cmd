@@ -30,6 +30,7 @@ import { z } from "zod";
 import { HostStore } from "./storage.js";
 import { loadMasterKey } from "./master_key.js";
 import { getConfigDir, getHostsFilePath } from "./paths.js";
+import { ConnectionPool } from "./pool.js";
 import { buildHelpTool } from "./tools/help.js";
 import { buildHostTools } from "./tools/hosts.js";
 import { buildSshTools } from "./tools/ssh_exec.js";
@@ -39,10 +40,17 @@ const SERVER_NAME = "server-manage-mcp-ssh";
 const SERVER_VERSION = "0.1.0";
 
 /** Build the MCP server with all tools registered. */
-async function buildServer(): Promise<Server> {
+async function buildServer(): Promise<{ server: Server; pool: ConnectionPool }> {
     const master = await loadMasterKey();
     const store = new HostStore(master);
-    const tools: McpTool[] = [...buildHelpTool(), ...buildHostTools(store), ...buildSshTools(store)];
+    // One pooled SSH connection per host — commands and playbook steps
+    // reuse the same session instead of reconnecting every time.
+    const pool = new ConnectionPool();
+    const tools: McpTool[] = [
+        ...buildHelpTool(),
+        ...buildHostTools(store, pool),
+        ...buildSshTools(store, pool),
+    ];
 
     const server = new Server(
         { name: SERVER_NAME, version: SERVER_VERSION },
@@ -97,7 +105,7 @@ async function buildServer(): Promise<Server> {
         }
     });
 
-    return server;
+    return { server, pool };
 }
 
 async function main(): Promise<void> {
@@ -109,7 +117,7 @@ async function main(): Promise<void> {
     log(`starting; config_dir=${getConfigDir()}`);
     log(`hosts file: ${getHostsFilePath()}`);
 
-    const server = await buildServer();
+    const { server, pool } = await buildServer();
     const transport = new StdioServerTransport();
     await server.connect(transport);
     log("connected to stdio transport");
@@ -119,6 +127,12 @@ async function main(): Promise<void> {
     const cleanup = async (code = 0) => {
         try {
             await server.close();
+        } catch {
+            // ignore
+        }
+        try {
+            // Close pooled SSH connections so sockets are not left open.
+            pool.closeAll();
         } catch {
             // ignore
         }

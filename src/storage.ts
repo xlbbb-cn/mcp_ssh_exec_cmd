@@ -9,6 +9,10 @@
  * Sensitive fields are encrypted via :mod:`./crypto` using the
  * process-wide master key.  The file is created with mode 0o600 on
  * POSIX so it is only readable by the owning user.
+ *
+ * The encrypted fields are ``ssh_password``, ``ssh_private_key`` and
+ * ``ssh_private_key_passphrase``; everything else is stored in clear
+ * text.
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -32,6 +36,15 @@ import type {
 interface StoreShape {
     version: 1;
     hosts: HostRecord[];
+}
+
+/** Reject ports that would fail later with a confusing connect error. */
+function validatePort(port: number): void {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(
+            `ssh_port must be an integer between 1 and 65535 (got ${String(port)})`,
+        );
+    }
 }
 
 export class HostStore {
@@ -120,6 +133,9 @@ export class HostStore {
             ssh_private_key: rec.ssh_private_key
                 ? decryptSecret(rec.ssh_private_key, this.master)
                 : "",
+            ssh_private_key_passphrase: rec.ssh_private_key_passphrase
+                ? decryptSecret(rec.ssh_private_key_passphrase, this.master)
+                : "",
             is_enable: rec.is_enable,
         };
     }
@@ -147,12 +163,10 @@ export class HostStore {
         return rec ? this.toCreds(rec) : null;
     }
 
-    async getByIp(ip: string): Promise<HostRecord | null> {
-        await this.ensureLoaded();
-        return this.cache.find((r) => r.ip_address === ip) ?? null;
-    }
-
-    async create(input: HostInput): Promise<HostPublic> {
+    async create(
+        input: HostInput,
+        options: { dryRun?: boolean } = {},
+    ): Promise<HostPublic> {
         await this.ensureLoaded();
         if (!input.ip_address) {
             throw new Error("ip_address is required");
@@ -172,12 +186,14 @@ export class HostStore {
         if (authMethod === "pubkey" && !input.ssh_private_key) {
             throw new Error("ssh_private_key is required for auth_method=pubkey");
         }
+        const port = input.ssh_port ?? 22;
+        validatePort(port);
         const now = this.nowIso();
         const rec: HostRecord = {
             id: randomUUID(),
             ip_address: input.ip_address,
             system_name: input.system_name ?? "",
-            ssh_port: input.ssh_port ?? 22,
+            ssh_port: port,
             ssh_username: input.ssh_username ?? "root",
             ssh_auth_method: authMethod,
             ssh_password: input.ssh_password
@@ -186,10 +202,18 @@ export class HostStore {
             ssh_private_key: input.ssh_private_key
                 ? encryptSecret(input.ssh_private_key, this.master)
                 : "",
+            ssh_private_key_passphrase: input.ssh_private_key_passphrase
+                ? encryptSecret(input.ssh_private_key_passphrase, this.master)
+                : "",
             is_enable: input.is_enable ?? true,
             created_at: now,
             updated_at: now,
         };
+        if (options.dryRun) {
+            // Validate-only: report what would be created without
+            // touching the store or the file on disk.
+            return this.toPublic(rec);
+        }
         this.cache.push(rec);
         await this.persist();
         return this.toPublic(rec);
@@ -219,6 +243,9 @@ export class HostStore {
             }
         }
 
+        const port = patch.ssh_port ?? current.ssh_port;
+        validatePort(port);
+
         const updated: HostRecord = {
             ...current,
             ip_address: patch.ip_address ?? current.ip_address,
@@ -226,7 +253,7 @@ export class HostStore {
                 patch.system_name !== undefined
                     ? patch.system_name
                     : current.system_name,
-            ssh_port: patch.ssh_port ?? current.ssh_port,
+            ssh_port: port,
             ssh_username: patch.ssh_username ?? current.ssh_username,
             ssh_auth_method: nextAuth,
             is_enable: patch.is_enable ?? current.is_enable,
@@ -241,6 +268,11 @@ export class HostStore {
         if (patch.ssh_private_key !== undefined) {
             updated.ssh_private_key = patch.ssh_private_key
                 ? encryptSecret(patch.ssh_private_key, this.master)
+                : "";
+        }
+        if (patch.ssh_private_key_passphrase !== undefined) {
+            updated.ssh_private_key_passphrase = patch.ssh_private_key_passphrase
+                ? encryptSecret(patch.ssh_private_key_passphrase, this.master)
                 : "";
         }
 

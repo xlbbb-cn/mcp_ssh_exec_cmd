@@ -27,6 +27,8 @@ export interface HostRecord {
     ssh_password: string;
     /** Encrypted (base64) private key when auth_method=pubkey. */
     ssh_private_key: string;
+    /** Encrypted (base64) passphrase protecting the private key, if any. */
+    ssh_private_key_passphrase: string;
     is_enable: boolean;
     created_at: string;
     updated_at: string;
@@ -43,6 +45,8 @@ export interface HostInput {
     ssh_password?: string;
     /** Plaintext private key (will be encrypted at rest). */
     ssh_private_key?: string;
+    /** Plaintext passphrase for the private key (will be encrypted at rest). */
+    ssh_private_key_passphrase?: string;
     is_enable?: boolean;
 }
 
@@ -62,6 +66,7 @@ export interface HostCreds {
     ssh_auth_method: AuthMethod;
     ssh_password: string;
     ssh_private_key: string;
+    ssh_private_key_passphrase: string;
     is_enable: boolean;
 }
 

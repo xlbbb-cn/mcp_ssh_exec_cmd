@@ -23,6 +23,7 @@ const child = spawn(process.execPath, [serverPath], {
 });
 
 const expected = new Set([
+    "cli_help",
     "host_list",
     "host_get",
     "host_create",
@@ -150,14 +151,22 @@ try {
     }
     console.log(`  ✓ host_create: id=${created.host.id.slice(0, 8)}…`);
 
-    // 6) call host_list again — should now have 1
+    // 6) call host_list again — should now be 1, and only expose
+    //    the host id and IP address.
     const listId2 = send("tools/call", { name: "host_list", arguments: {} });
     const list2 = await ok(listId2);
     const items2 = JSON.parse(list2.content[0].text).items;
     if (items2.length !== 1) {
         throw new Error(`expected 1 host, got ${items2.length}`);
     }
-    console.log(`  ✓ host_list: 1 host persisted across calls`);
+    const keys = Object.keys(items2[0]).sort();
+    if (keys.length !== 2 || keys[0] !== "id" || keys[1] !== "ip_address") {
+        throw new Error(`host_list exposed unexpected fields: ${keys.join(",")}`);
+    }
+    if (items2[0].ip_address !== "127.0.0.1") {
+        throw new Error(`host_list ip_address=${items2[0].ip_address}`);
+    }
+    console.log(`  ✓ host_list: 1 host persisted, only id + ip_address exposed`);
 
     // 7) call host_get — should not contain password
     const getId = send("tools/call", {

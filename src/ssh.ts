@@ -7,84 +7,269 @@
  *
  * Public API
  * ──────────
- * - :class:`SshClient`
+ * - :class:`ConnectionPool` (see ``./pool.js``) — reuses one connection
+ *   per host across commands.
  * - :func:`runCommand`               — single non-interactive command
  * - :func:`runInteractiveCommand`    — command that consumes one or
  *                                       more ``expect/answer`` pairs
- * - :func:`runPlaybook`              — runs a list of steps parsed
+ * - :func:`runPlaybook`               — runs a list of steps parsed
  *                                       from a playbook body
  *
  * Each public function returns a :class:`CommandResult` and never
  * throws for "expected" failures (auth rejected, command not found,
  * non-zero exit code, …).  Unexpected programmer errors propagate
  * so the MCP dispatcher can decide how to surface them.
+ *
+ * Timeouts
+ * ────────
+ * ``timeoutSeconds`` is a **hard cap**: a command that is still running
+ * when the cap expires is terminated and reported as
+ * ``success: false`` / ``exit_code: null`` with a note in ``stderr``.
+ * For playbooks the cap applies to the whole playbook — each step only
+ * gets the time that is left.
  */
-import { Client, type ConnectConfig } from "ssh2";
+import type { Client } from "ssh2";
+import {
+    ConnectionPool,
+    SshConnectionError,
+    openConnection,
+    type PoolLease,
+} from "./pool.js";
 import type { CommandResult, ExpectAnswer, HostCreds } from "./types.js";
+
+export { SshConnectionError };
 
 const DEFAULT_TIMEOUT_S = 30;
 
-export interface SshClientOptions {
+export interface SshRunnerOptions {
+    /** Hard cap for the operation, in seconds. */
     timeoutSeconds?: number;
-    /** When ``true`` (default), the connection is closed even on
-     *  early errors. */
-    alwaysClose?: boolean;
+    /** Optional connection pool; when omitted a throw-away connection is used. */
+    pool?: ConnectionPool;
 }
 
-export class SshConnectionError extends Error {
-    constructor(message: string, public readonly cause?: unknown) {
-        super(message);
-        this.name = "SshConnectionError";
-    }
-}
+// ── low-level execution helpers ───────────────────────────────────────────
 
-// ── low-level connection helper ───────────────────────────────────────────
-
-function connect(creds: HostCreds, timeoutSeconds: number): Promise<Client> {
-    return new Promise((resolve, reject) => {
-        const config: ConnectConfig = {
-            host: creds.ip_address,
-            port: creds.ssh_port,
-            username: creds.ssh_username,
-            // ssh2 has its own keepalive defaults; pass them through.
-            readyTimeout: timeoutSeconds * 1000,
-            tryKeyboard: false,
-        };
-        if (creds.ssh_auth_method === "password") {
-            config.password = creds.ssh_password;
-        } else {
-            config.privateKey = creds.ssh_private_key;
-        }
-
-        const conn = new Client();
-        let settled = false;
-
-        const fail = (err: Error) => {
-            if (settled) return;
-            settled = true;
-            try {
-                conn.end();
-            } catch {
-                // ignore
+/**
+ * Run `command` on an already-open connection and resolve with the
+ * result.  The command is terminated when `timeoutSeconds` elapses.
+ */
+export function execOnClient(
+    client: Client,
+    command: string,
+    timeoutSeconds: number,
+): Promise<CommandResult> {
+    const started = Date.now();
+    return new Promise<CommandResult>((resolve, reject) => {
+        client.exec(command, { pty: false }, (err, stream) => {
+            if (err) {
+                reject(err);
+                return;
             }
-            reject(new SshConnectionError(err.message, err));
-        };
+            let stdout = "";
+            let stderr = "";
+            let settled = false;
+            let timer: NodeJS.Timeout | null = null;
 
-        conn.on("ready", () => {
-            if (settled) return;
-            settled = true;
-            resolve(conn);
-        });
-        conn.on("error", fail);
-        conn.on("close", () => {
-            if (!settled) {
+            const finish = (code: number | null, timedOut: boolean): void => {
+                if (settled) return;
                 settled = true;
-                reject(new SshConnectionError("connection closed before ready"));
-            }
-        });
+                if (timer) clearTimeout(timer);
+                if (timedOut) {
+                    try {
+                        stream.close();
+                    } catch {
+                        // ignore
+                    }
+                    stderr += `\n[mcp-ssh] command timed out after ${timeoutSeconds}s`;
+                }
+                resolve({
+                    command,
+                    stdout,
+                    stderr,
+                    exit_code: timedOut ? null : code,
+                    success: !timedOut && code === 0,
+                    duration_ms: Date.now() - started,
+                });
+            };
 
-        conn.connect(config);
+            timer = setTimeout(
+                () => finish(null, true),
+                Math.max(1, timeoutSeconds) * 1000,
+            );
+
+            stream
+                .on("close", (code: number | null) => finish(code, false))
+                .on("data", (data: Buffer) => {
+                    stdout += data.toString("utf8");
+                });
+            stream.stderr.on("data", (data: Buffer) => {
+                stderr += data.toString("utf8");
+            });
+        });
     });
+}
+
+/**
+ * Run `command` on an already-open connection and feed back `expects`
+ * in order.
+ *
+ * The implementation is a simple state machine over the shell
+ * stream's output buffer: every time data arrives we look for the
+ * next expect pattern; once it matches, we write the corresponding
+ * answer (with a trailing newline).  The stream is closed when:
+ *   - the server exits (``close`` event), or
+ *   - the timeout elapses (hard cap).
+ *
+ * Mirrors the behaviour of :func:`app.utils.ssh_helper.run_interactive_command`
+ * — the model supplies the same shape of input.
+ */
+export function shellOnClient(
+    client: Client,
+    command: string,
+    expects: ExpectAnswer[],
+    timeoutSeconds: number,
+): Promise<CommandResult> {
+    const started = Date.now();
+    return new Promise<CommandResult>((resolve, reject) => {
+        // `ssh2` uses PseudoTtyOptions for an allocated PTY; passing
+        // `{ rows, cols, term }` is the standard incantation for an
+        // xterm-sized PTY.  sudo and similar tools require a PTY
+        // because they check `isatty(stdout)`.
+        client.shell({ rows: 24, cols: 80, term: "xterm-256color" }, (err, stream) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            let stdout = "";
+            let stderr = "";
+            let expectIdx = 0;
+            let settled = false;
+            let timer: NodeJS.Timeout | null = null;
+
+            const finish = (code: number | null, timedOut: boolean): void => {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                if (timedOut) {
+                    try {
+                        stream.close();
+                    } catch {
+                        // ignore
+                    }
+                    stderr += `\n[mcp-ssh] command timed out after ${timeoutSeconds}s`;
+                }
+                resolve({
+                    command,
+                    stdout,
+                    stderr,
+                    exit_code: timedOut ? null : code,
+                    success: !timedOut && code === 0,
+                    duration_ms: Date.now() - started,
+                });
+            };
+
+            timer = setTimeout(
+                () => finish(null, true),
+                Math.max(1, timeoutSeconds) * 1000,
+            );
+
+            stream
+                .on("close", (code: number | null) => finish(code, false))
+                .on("data", (data: Buffer) => {
+                    const text = data.toString("utf8");
+                    stdout += text;
+                    // Try to match the next expect.
+                    while (expectIdx < expects.length) {
+                        const exp = expects[expectIdx];
+                        if (exp.expect && stdout.includes(exp.expect)) {
+                            stream.write(`${exp.answer}\n`);
+                            stderr += `[wrote answer for expect #${expectIdx + 1}]\n`;
+                            expectIdx += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                })
+                .stderr.on("data", (data: Buffer) => {
+                    stderr += data.toString("utf8");
+                });
+
+            stream.write(`${command}\n`);
+        });
+    });
+}
+
+/**
+ * True when the failure means "the connection is gone" and the command
+ * therefore deserves a retry on a fresh connection.  Authentication
+ * failures are explicitly excluded — retrying them only doubles the
+ * delay before the same error.
+ */
+function isConnectionFailure(err: unknown): boolean {
+    const parts: string[] = [];
+    if (err instanceof SshConnectionError) {
+        parts.push(err.message);
+        if (err.cause instanceof Error) parts.push(err.cause.message);
+    } else if (err instanceof Error) {
+        parts.push(err.message);
+    }
+    const message = parts.join(" | ");
+    if (/authentication|auth method|publickey|password/i.test(message)) {
+        return false;
+    }
+    return /not connected|connection closed|socket closed|closed before ready|econnreset|epipe|econnrefused/i.test(
+        message,
+    );
+}
+
+/**
+ * Run `fn` with a connection for `creds`.  Uses the pool when one is
+ * supplied, otherwise opens (and closes) a dedicated connection.
+ *
+ * A connection-level failure is retried once on a fresh connection —
+ * a pooled socket may have been closed by the peer while it was idle.
+ */
+async function runWithConnection<T>(
+    creds: HostCreds,
+    timeoutSeconds: number,
+    options: SshRunnerOptions,
+    fn: (client: Client) => Promise<T>,
+): Promise<T> {
+    const pool = options.pool;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        let lease: PoolLease | null = null;
+        let client: Client | null = null;
+        try {
+            if (pool) {
+                lease = await pool.acquire(creds, timeoutSeconds);
+                client = lease.client;
+            } else {
+                client = await openConnection(creds, timeoutSeconds);
+            }
+            return await fn(client);
+        } catch (err) {
+            lastError = err;
+            if (attempt === 0 && isConnectionFailure(err)) {
+                if (pool) pool.invalidate(creds.id);
+                continue;
+            }
+            throw err;
+        } finally {
+            if (!pool && client) {
+                try {
+                    client.end();
+                } catch {
+                    // ignore
+                }
+            }
+            lease?.release();
+        }
+    }
+
+    throw lastError;
 }
 
 // ── non-interactive command ───────────────────────────────────────────────
@@ -92,167 +277,32 @@ function connect(creds: HostCreds, timeoutSeconds: number): Promise<Client> {
 export async function runCommand(
     creds: HostCreds,
     command: string,
-    options: SshClientOptions = {},
+    options: SshRunnerOptions = {},
 ): Promise<CommandResult> {
     const timeout = options.timeoutSeconds ?? DEFAULT_TIMEOUT_S;
-    const started = Date.now();
-    let conn: Client | null = null;
-
-    try {
-        conn = await connect(creds, timeout);
-        const result = await new Promise<CommandResult>((resolve, reject) => {
-            conn!.exec(command, { pty: false }, (err, stream) => {
-                if (err) return reject(err);
-                let stdout = "";
-                let stderr = "";
-                stream
-                    .on("close", (code: number | null) => {
-                        resolve({
-                            command,
-                            stdout,
-                            stderr,
-                            exit_code: typeof code === "number" ? code : null,
-                            success: code === 0,
-                            duration_ms: Date.now() - started,
-                        });
-                    })
-                    .on("data", (data: Buffer) => {
-                        stdout += data.toString("utf8");
-                    })
-                    .stderr.on("data", (data: Buffer) => {
-                        stderr += data.toString("utf8");
-                    });
-            });
-        });
-        return result;
-    } finally {
-        if (conn) {
-            try {
-                conn.end();
-            } catch {
-                // ignore
-            }
-        }
-    }
+    return runWithConnection(
+        creds,
+        timeout,
+        options,
+        (client) => execOnClient(client, command, timeout),
+    );
 }
 
 // ── interactive command (expect/answer) ───────────────────────────────────
 
-/**
- * Run ``command`` and feed back ``expects`` in order.
- *
- * The implementation is a simple state machine over the shell
- * stream's output buffer: every time data arrives we look for the
- * next expect pattern; once it matches, we write the corresponding
- * answer (with a trailing newline).  The stream is closed when:
- *   - the server exits (``close`` event), or
- *   - the configured timeout elapses, or
- *   - all expects have been satisfied AND we observe a short idle
- *     period with no more data.
- *
- * Mirrors the behaviour of :func:`app.utils.ssh_helper.run_interactive_command`
- * — the model supplies the same shape of input.
- */
 export async function runInteractiveCommand(
     creds: HostCreds,
     command: string,
     expects: ExpectAnswer[],
-    options: SshClientOptions = {},
+    options: SshRunnerOptions = {},
 ): Promise<CommandResult> {
     const timeout = options.timeoutSeconds ?? DEFAULT_TIMEOUT_S;
-    const started = Date.now();
-    let conn: Client | null = null;
-    let watchdog: NodeJS.Timeout | null = null;
-
-    try {
-        conn = await connect(creds, timeout);
-
-        const result = await new Promise<CommandResult>((resolve, reject) => {
-            // `ssh2` uses PseudoTtyOptions for an allocated PTY; passing
-            // `{ rows, cols, term }` is the standard incantation for an
-            // xterm-sized PTY.  sudo and similar tools require a PTY
-            // because they check `isatty(stdout)`.
-            conn!.shell({ rows: 24, cols: 80, term: "xterm-256color" }, (err, stream) => {
-                if (err) return reject(err);
-
-                let stdout = "";
-                let stderr = "";
-                let expectIdx = 0;
-                let closed = false;
-
-                const armWatchdog = () => {
-                    if (watchdog) clearTimeout(watchdog);
-                    watchdog = setTimeout(() => {
-                        if (closed) return;
-                        closed = true;
-                        try {
-                            stream.close();
-                        } catch {
-                            // ignore
-                        }
-                        resolve({
-                            command,
-                            stdout,
-                            stderr,
-                            exit_code: null,
-                            success: false,
-                            duration_ms: Date.now() - started,
-                        });
-                    }, timeout * 1000);
-                };
-
-                const finish = (code: number | null) => {
-                    if (closed) return;
-                    closed = true;
-                    if (watchdog) clearTimeout(watchdog);
-                    resolve({
-                        command,
-                        stdout,
-                        stderr,
-                        exit_code: typeof code === "number" ? code : null,
-                        success: code === 0,
-                        duration_ms: Date.now() - started,
-                    });
-                };
-
-                stream
-                    .on("close", finish)
-                    .on("data", (data: Buffer) => {
-                        const text = data.toString("utf8");
-                        stdout += text;
-                        // Try to match the next expect.
-                        while (expectIdx < expects.length) {
-                            const exp = expects[expectIdx];
-                            if (exp.expect && stdout.includes(exp.expect)) {
-                                stream.write(`${exp.answer}\n`);
-                                stderr += `[wrote answer for expect #${expectIdx + 1}]\n`;
-                                expectIdx += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        armWatchdog();
-                    })
-                    .stderr.on("data", (data: Buffer) => {
-                        stderr += data.toString("utf8");
-                        armWatchdog();
-                    });
-
-                armWatchdog();
-                stream.write(`${command}\n`);
-            });
-        });
-        return result;
-    } finally {
-        if (watchdog) clearTimeout(watchdog);
-        if (conn) {
-            try {
-                conn.end();
-            } catch {
-                // ignore
-            }
-        }
-    }
+    return runWithConnection(
+        creds,
+        timeout,
+        options,
+        (client) => shellOnClient(client, command, expects, timeout),
+    );
 }
 
 // ── playbook runner ───────────────────────────────────────────────────────
@@ -295,10 +345,10 @@ export function parsePlaybook(body: string): ParsedStep[] {
         if (line.startsWith("# @on ")) {
             const m = line.match(/^# @on\s+["'](.+?)["']\s*$/);
             if (m) {
-                const expects = collectExpectAnswers(lines, i + 1);
-                steps.push({ command: m[1], expects });
+                const scan = scanExpectAnswers(lines, i + 1);
+                steps.push({ command: m[1], expects: scan.expects });
                 // skip past the consumed expect/answer lines
-                i += 1 + countExpectAnswerLines(lines, i + 1);
+                i = i + 1 + scan.consumed;
                 continue;
             }
         }
@@ -320,61 +370,62 @@ export function parsePlaybook(body: string): ParsedStep[] {
             continue;
         }
 
+        // Malformed leftovers (an ``expect:`` without a matching
+        // ``answer:``) must never be executed as a shell command.
+        if (/^(expect|answer)\s*:/i.test(line)) {
+            i += 1;
+            continue;
+        }
+
         // Plain command — may have trailing expect:/answer: pairs.
-        const expects = collectExpectAnswers(lines, i + 1);
-        steps.push({ command: line, expects });
-        i += 1 + countExpectAnswerLines(lines, i + 1);
+        const scan = scanExpectAnswers(lines, i + 1);
+        steps.push({ command: line, expects: scan.expects });
+        i = i + 1 + scan.consumed;
     }
     return steps;
 }
 
-function collectExpectAnswers(
-    lines: string[],
-    start: number,
-): ExpectAnswer[] {
-    const out: ExpectAnswer[] = [];
-    let i = start;
-    while (i < lines.length) {
-        const line = lines[i].trim();
-        if (!line) break;
-        const expectMatch = line.match(/^expect:\s*(.+)$/i);
-        if (expectMatch) {
-            const expect = expectMatch[1].trim().replace(/^["']|["']$/g, "");
-            // Look for the matching answer on the next non-blank line.
-            const ansLine = (lines[i + 1] ?? "").trim();
-            const ansMatch = ansLine.match(/^answer:\s*(.+)$/i);
-            if (ansMatch) {
-                const answer = ansMatch[1].trim().replace(/^["']|["']$/g, "");
-                out.push({ expect, answer });
-                i += 2;
-                continue;
-            }
-            break;
-        }
-        break;
-    }
-    return out;
+interface ExpectScan {
+    expects: ExpectAnswer[];
+    /** Number of lines consumed after the command line. */
+    consumed: number;
 }
 
-function countExpectAnswerLines(lines: string[], start: number): number {
-    let count = 0;
+/**
+ * Collect the ``expect:``/``answer:`` pairs that follow a command.
+ *
+ * Blank lines between the command and its pairs are tolerated, and the
+ * number of consumed lines is reported so the caller can skip exactly
+ * what was parsed (the old implementation counted the same lines twice
+ * and could drift out of sync).
+ */
+function scanExpectAnswers(lines: string[], start: number): ExpectScan {
+    const out: ExpectAnswer[] = [];
     let i = start;
+
     while (i < lines.length) {
         const line = lines[i].trim();
-        if (!line) break;
-        if (/^expect:\s*/i.test(line)) {
-            count += 1;
-            const ans = (lines[i + 1] ?? "").trim();
-            if (/^answer:\s*/i.test(ans)) {
-                count += 1;
-                i += 2;
-                continue;
-            }
-            break;
+        if (!line) {
+            i += 1;
+            continue;
         }
-        break;
+        const expectMatch = line.match(/^expect:\s*(.+)$/i);
+        if (!expectMatch) break;
+
+        // Look for the matching answer on the next non-blank line.
+        let j = i + 1;
+        while (j < lines.length && !lines[j].trim()) j += 1;
+        const ansMatch = (lines[j] ?? "").trim().match(/^answer:\s*(.+)$/i);
+        if (!ansMatch) break;
+
+        out.push({
+            expect: expectMatch[1].trim().replace(/^["']|["']$/g, ""),
+            answer: ansMatch[1].trim().replace(/^["']|["']$/g, ""),
+        });
+        i = j + 1;
     }
-    return count;
+
+    return { expects: out, consumed: Math.max(0, i - start) };
 }
 
 export interface PlaybookStepResult extends CommandResult {
@@ -384,26 +435,66 @@ export interface PlaybookStepResult extends CommandResult {
 /**
  * Run a multi-step playbook.  Stops on the first non-zero exit code
  * and returns the partial transcript.
+ *
+ * All steps share a single SSH connection (pooled when a pool is
+ * supplied) and `timeoutSeconds` is the budget for the *whole*
+ * playbook — each step only gets the time that is left.
  */
 export async function runPlaybook(
     creds: HostCreds,
     body: string,
-    options: SshClientOptions = {},
+    options: SshRunnerOptions = {},
 ): Promise<{ step_count: number; all_success: boolean; results: PlaybookStepResult[] }> {
     const steps = parsePlaybook(body);
+    const totalTimeout = options.timeoutSeconds ?? DEFAULT_TIMEOUT_S;
+    const started = Date.now();
     const results: PlaybookStepResult[] = [];
     let allSuccess = true;
+    let lease: PoolLease | null = null;
+    let client: Client | null = null;
 
-    for (let i = 0; i < steps.length; i += 1) {
-        const step = steps[i];
-        const r = step.expects.length
-            ? await runInteractiveCommand(creds, step.command, step.expects, options)
-            : await runCommand(creds, step.command, options);
-        results.push({ ...r, step_index: i + 1 });
-        if (!r.success) {
-            allSuccess = false;
-            break;
+    try {
+        if (options.pool) {
+            lease = await options.pool.acquire(creds, totalTimeout);
+            client = lease.client;
+        } else {
+            client = await openConnection(creds, totalTimeout);
         }
+
+        for (let i = 0; i < steps.length; i += 1) {
+            const step = steps[i];
+            const remaining = totalTimeout - (Date.now() - started) / 1000;
+            if (remaining <= 0) {
+                allSuccess = false;
+                results.push({
+                    command: step.command,
+                    stdout: "",
+                    stderr: `[mcp-ssh] playbook exceeded its ${totalTimeout}s budget`,
+                    exit_code: null,
+                    success: false,
+                    duration_ms: Date.now() - started,
+                    step_index: i + 1,
+                });
+                break;
+            }
+            const r = step.expects.length
+                ? await shellOnClient(client, step.command, step.expects, remaining)
+                : await execOnClient(client, step.command, remaining);
+            results.push({ ...r, step_index: i + 1 });
+            if (!r.success) {
+                allSuccess = false;
+                break;
+            }
+        }
+    } finally {
+        if (!options.pool && client) {
+            try {
+                client.end();
+            } catch {
+                // ignore
+            }
+        }
+        lease?.release();
     }
 
     return {

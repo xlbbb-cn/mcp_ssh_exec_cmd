@@ -68,6 +68,22 @@ const CLI_HELP_TEXT = [
     "remote-ssh-cli delete <host_id>",
     "\`\`\`",
     "",
+    "### \u4ece CSV \u5bfc\u5165\u4e3b\u673a",
+    "\u51c6\u5907\u4e00\u4e2a CSV \u6587\u4ef6\uff08\u9996\u884c\u4e3a\u8868\u5934\uff09\uff1a",
+    "\`\`\`csv",
+    "ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password",
+    "192.168.1.100,web-01,22,root,password,secret",
+    "\`\`\`",
+    "\u7136\u540e\u6267\u884c\uff1a",
+    "\`\`\`bash",
+    "remote-ssh-cli import hosts.csv",
+    "remote-ssh-cli import hosts.csv --dry-run",
+    "\`\`\`",
+    "",
+    "\u53ef\u7528\u5217\uff1a`ip_address`\uff08\u5fc5\u586b\uff09\u3001`system_name`\u3001`ssh_port`\u3001`ssh_username`\u3001",
+    "`ssh_auth_method`\uff08password/pubkey\uff09\u3001`ssh_password`\u3001`ssh_private_key`\u3001",
+    "`ssh_private_key_path`\u3001`ssh_private_key_passphrase`\u3001`is_enable`\u3002",
+    "",
     "## Windows \u6545\u969c\u6392\u9664",
     "",
     "\u5982\u679c\u9047\u5230 `JScript \u7f16\u8bd1\u9519\u8bef (800A03EA)`\uff0c\u8bf7\u4f7f\u7528 **cmd.exe** \u8fd0\u884c `remote-ssh-cli` \u547d\u4ee4\uff0c",
@@ -83,7 +99,7 @@ const helpSchema = {
         .optional()
         .describe(
             "Optional topic to filter help: 'install', 'list', 'get', 'create', " +
-            "'update', 'delete', 'tui', or 'windows' for troubleshooting. " +
+            "'update', 'delete', 'import', 'tui', or 'windows' for troubleshooting. " +
             "Omit to get the full help text.",
         ),
 };
@@ -151,6 +167,21 @@ function buildTopicText(topic: string): string {
             "remote-ssh-cli delete <host_id>",
             "\`\`\`",
         ],
+        import: [
+            "### \u4ece CSV \u5bfc\u5165\u4e3b\u673a",
+            "",
+            "\`\`\`bash",
+            "remote-ssh-cli import hosts.csv",
+            "remote-ssh-cli import hosts.csv --dry-run",
+            "\`\`\`",
+            "",
+            "CSV \u9996\u884c\u5fc5\u987b\u662f\u8868\u5934\uff0c\u81f3\u5c11\u5305\u542b `ip_address` \u5217\u3002",
+            "\u53ef\u7528\u5217\uff1a`ip_address`\uff08\u5fc5\u586b\uff09\u3001`system_name`\u3001`ssh_port`\u3001",
+            "`ssh_username`\u3001`ssh_auth_method`\uff08password/pubkey\uff09\u3001`ssh_password`\u3001",
+            "`ssh_private_key`\u3001`ssh_private_key_path`\u3001`ssh_private_key_passphrase`\u3001`is_enable`\u3002",
+            "",
+            "\u5355\u884c\u9519\u8bef\u4e0d\u4f1a\u4e2d\u65ad\u6574\u4e2a\u5bfc\u5165\uff1a\u6bcf\u884c\u4f1a\u88ab\u62a5\u544a\u4e3a created / skipped / failed\u3002",
+        ],
         tui: [
             "### \u4ea4\u4e92\u5f0f TUI",
             "",
@@ -170,7 +201,7 @@ function buildTopicText(topic: string): string {
     return (lines[topic] ?? ["Unknown topic"]).join("\n");
 }
 
-const TOPIC_KEYS = ["install", "list", "get", "create", "update", "delete", "tui", "windows"];
+const TOPIC_KEYS = ["install", "list", "get", "create", "update", "delete", "import", "tui", "windows"];
 
 export function buildHelpTool(): McpTool[] {
     return [

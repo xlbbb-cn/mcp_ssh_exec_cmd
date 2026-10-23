@@ -16,9 +16,10 @@
 
 | 工具 | 说明 |
 |---|---|
-| `host_list` | 列出所有主机（不含凭据） |
+| `cli_help` | 返回 `remote-ssh-cli` 的安装 / 用法 / 排障说明（按 topic 分节） |
+| `host_list` | 列出所有主机（**只返回 `id` 与 `ip_address`**，不含任何凭据） |
 | `host_get` | 获取单个主机的公开信息（不含凭据） |
-| `host_create` | 新增一台主机（密码 / 私钥会被加密落盘） |
+| `host_create` | 新增一台主机（密码 / 私钥 / 私钥口令会被加密落盘） |
 | `host_update` | 更新主机字段（未提供的凭据字段保持原值） |
 | `host_delete` | 删除主机 |
 | `ssh_run_command` | 在指定主机上执行单条非交互命令 |
@@ -58,7 +59,37 @@ remote-ssh-cli get <id>
 remote-ssh-cli create <json-file>
 remote-ssh-cli update <id> <json-file>
 remote-ssh-cli delete <id>
+remote-ssh-cli import <csv-file> [--dry-run]   # 批量导入主机
 ```
+
+### CSV 批量导入
+
+`remote-ssh-cli import hosts.csv` 会把 CSV 里的每一行导入成一台主机。
+首行必须是表头，且至少包含 `ip_address` 列：
+
+```csv
+ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
+192.168.1.100,web-01,22,root,password,secret
+192.168.1.101,db-01,2222,deploy,password,secret
+```
+
+| 列 | 说明 | 默认值 |
+|---|---|---|
+| `ip_address` | 必填，主机地址，全表唯一 | — |
+| `system_name` | 备注名 | 空 |
+| `ssh_port` | SSH 端口 | `22` |
+| `ssh_username` | SSH 用户名 | `root` |
+| `ssh_auth_method` | `password` / `pubkey` | `password` |
+| `ssh_password` | 明文密码（落盘前加密） | — |
+| `ssh_private_key` | 明文私钥内容（落盘前加密） | — |
+| `ssh_private_key_path` | 私钥文件路径（与 `ssh_private_key` 二选一） | — |
+| `ssh_private_key_passphrase` | 私钥口令（落盘前加密） | — |
+| `is_enable` | `true/false/1/0/yes/no` | `true` |
+
+- 字段名大小写不敏感，支持 `ip` / `host` / `name` / `port` / `user` 等别名。
+- 引号内的逗号、换行、`""` 转义都按 RFC 4180 解析，私钥内容不会被拆坏。
+- **单行错误不会中断整批导入**：每行最终会被归类为 created / skipped（IP 重复）/ failed（数据非法），命令以摘要形式打印，失败行数 > 0 时退出码为 1。
+- `--dry-run` 只做校验与报告，不写盘。
 
 > **Windows 注意**：如果遇到 `JScript 编译错误 (800A03EA)`，请确保 npm 版本 >= 10.8.0，或直接在 **cmd.exe** 中运行（而非 PowerShell），因为 npm 生成的 `.ps1` 包装脚本在旧版本中可能不会显式调用 `node`。本包已为入口文件添加 `#!/usr/bin/env node` shebang。
 
@@ -88,12 +119,25 @@ remote-ssh-cli delete <id>
 
 | 变量 | 说明 | 默认值 |
 |---|---|---|
-| `MCP_SSH_MASTER_KEY` | 32 字节的十六进制字符串。**设置后必须妥善备份**：换机器 / 换值都会导致现有 `hosts.json` 里的凭据全部无法解密 | 首次启动时自动生成，存到 `<config_dir>/master.key` |
+| `MCP_SSH_MASTER_KEY` | 32 字节的十六进制字符串（64 个 hex 字符）。**设置后必须妥善备份**：换机器 / 换值都会导致现有 `hosts.json` 里的凭据全部无法解密 | 首次启动时自动生成，存到 `<config_dir>/master.key` |
 | `MCP_SSH_CONFIG_DIR` | 配置目录覆盖 | `~/.mcp-ssh-server` |
+| `MCP_SSH_POOL_IDLE_MS` | SSH 连接池中空闲连接的存活时间（毫秒）。`0` 表示完全关闭连接池，每次命令都新建连接 | `60000` |
+| `MCP_SSH_POOL_MAX_HOSTS` | 连接池最多缓存多少台主机（超出时回收最久未用的空闲连接） | `32` |
+
+### SSH 连接池
+
+- 每台主机只保留 **一条** SSH 连接，同一台主机上的连续命令、playbook 的多个步骤都会复用它。
+- 连接池按「主机 id + 凭据指纹」管理：密码 / 私钥 / 地址 / 端口 / 用户名任一项变化，缓存的连接立刻作废，下次命令重新建连；`host_update` / `host_delete` 也会主动丢弃对应连接。
+- 空闲连接在 `MCP_SSH_POOL_IDLE_MS` 之后关闭；被对端断开的连接会在下次使用时自动重连（最多重试一次）。
+- 进程退出（MCP 客户端断开）时会关闭全部池化连接。
+
+### 超时语义
+
+`ssh_run_command` / `ssh_run_interactive` 的 `timeout_seconds` 是**硬上限**：超时后命令会被终止，结果里 `success=false`、`exit_code=null`，并在 `stderr` 里写明超时。`ssh_run_playbook` 的 `timeout_seconds` 是**整个 playbook 的总预算**，每个步骤只能用剩余时间。
 
 ## 存储
 
-- `hosts.json`：所有主机记录的明文 JSON，明文字段不加密，**`ssh_password` / `ssh_private_key` 字段是加密后的 base64 字符串**。
+- `hosts.json`：所有主机记录的明文 JSON，明文字段不加密，**`ssh_password` / `ssh_private_key` / `ssh_private_key_passphrase` 字段是加密后的 base64 字符串**。
 - `master.key`：32 字节主密钥（POSIX 上 `0o600` 权限）。
 - 写文件用「先写 `.tmp` 再 rename」的方式，崩溃不会留半文件。
 
@@ -108,21 +152,23 @@ remote-ssh-cli delete <id>
 
 ```bash
 npm run dev   # tsc -w
-npm test      # smoke test
+npm test      # smoke tests
 ```
 
 ### Smoke 测试
 
-`test/smoke.mjs` 不依赖真实 SSH 服务器，验证：
+`npm test` 依次跑三个脚本（都不依赖真实 SSH 服务器）：
 
-- 加密 + 解密往返（crypto.ts）
-- HostStore CRUD 完整路径（包含加密落盘 / 读取 / 列表 / 更新 / 删除）
-- parsePlaybook 对结构化与旧式两种格式的解析
+- `test/smoke.mjs`：加密 + 解密往返（crypto.ts）、HostStore CRUD 完整路径（含加密落盘 / 读取 / 列表 / 更新 / 删除）、parsePlaybook 对结构化与旧式两种格式的解析。
+- `test/features_smoke.mjs`：CSV 解析与主机行映射、批量导入（含 dry-run 与重复 IP 跳过）、连接池的复用 / 凭据变更作废 / 空闲回收、playbook 解析的边界情况。
+- `test/mcp_smoke.mjs`：以子进程拉起 MCP 服务器，走一遍 JSON-RPC 握手，校验 9 个工具都被正确注册、`host_list` 只暴露 `id` 与 `ip_address`、密码不会出现在任何响应里。
 
-运行：
+运行单个文件：
 
 ```bash
-npm test
+node test/smoke.mjs
+node test/features_smoke.mjs
+node test/mcp_smoke.mjs
 ```
 
 ## 与 FastAPI 后端的关系
