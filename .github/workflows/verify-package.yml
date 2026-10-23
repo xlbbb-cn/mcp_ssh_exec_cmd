@@ -1,0 +1,45 @@
+name: Verify published package
+
+# Installs the package straight from GitHub Packages and exercises it:
+# the published version, the MCP server handshake and the advertised tools.
+# Runs on demand and once a week, so a broken publish is noticed early.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  verify:
+    name: Install from GitHub Packages and smoke-test it
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+          scope: "@xlbbb-cn"
+
+      - name: Install the published package
+        run: npm install @xlbbb-cn/mcp_ssh_exec_cmd --no-save
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show what the registry served
+        run: |
+          npm ls @xlbbb-cn/mcp_ssh_exec_cmd
+          npm view @xlbbb-cn/mcp_ssh_exec_cmd version --registry=https://npm.pkg.github.com
+
+      - name: Exercise the published package
+        run: node test/verify_published.mjs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
