@@ -8,7 +8,7 @@
  *   node test/verify_published.mjs
  *
  * It resolves the installed package, spawns its MCP server and checks
- * that the JSON-RPC handshake works and that all 8 tools are advertised.
+ * that the JSON-RPC handshake works and that all 9 tools are advertised.
  *
  * Run with:  node test/verify_published.mjs
  */
@@ -30,6 +30,7 @@ const EXPECTED_TOOLS = [
     "ssh_run_command",
     "ssh_run_interactive",
     "ssh_run_playbook",
+    "pool_status",
 ];
 
 let mainPath;

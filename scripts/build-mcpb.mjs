@@ -53,6 +53,10 @@ const manifest = {
     support: pkg.bugs.url,
     license: pkg.license,
     keywords: pkg.keywords,
+    // No `tools` array: the MCPB schema forbids inputSchema
+    // (additionalProperties: false) while Smithery validates manifest tools
+    // with the strict MCP Tool schema which requires it. Clients discover
+    // the 9 tools through tools/list at runtime anyway.
     server: {
         type: "node",
         entry_point: "dist/index.js",
@@ -61,17 +65,6 @@ const manifest = {
             args: ["${__dirname}/dist/index.js"],
         },
     },
-    tools: [
-        { name: "cli_help", description: "Built-in help for the companion CLI" },
-        { name: "host_list", description: "List stored SSH hosts (sys_name + uid only)" },
-        { name: "host_create", description: "Create an SSH host entry" },
-        { name: "host_update", description: "Update an SSH host entry" },
-        { name: "host_delete", description: "Delete an SSH host entry" },
-        { name: "ssh_run_command", description: "Run one command on a host through the connection pool" },
-        { name: "ssh_run_interactive", description: "Open an interactive shell session on a host" },
-        { name: "ssh_run_playbook", description: "Run a scripted sequence of commands on a host" },
-        { name: "pool_status", description: "Desensitized live view of the SSH connection pool" },
-    ],
     compatibility: {
         platforms: ["darwin", "win32", "linux"],
         runtimes: { node: pkg.engines.node.replace(">=", "") },
