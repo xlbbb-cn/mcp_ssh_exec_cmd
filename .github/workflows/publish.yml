@@ -209,17 +209,30 @@ jobs:
       - name: Publish
         if: ${{ !inputs.dry_run }}
         run: |
+          # Two attempts: the registry's npm ownership check fetches the
+          # just-published package and can transiently fail.
           set +e
-          mcp-publisher publish ./server.json 2>&1 | tee publish-registry.log
-          code=${PIPESTATUS[0]}
-          set -e
-          if [ $code -ne 0 ]; then
+          for attempt in 1 2; do
+            mcp-publisher publish ./server.json 2>&1 | tee publish-registry.log
+            code=${PIPESTATUS[0]}
+            if [ $code -eq 0 ]; then break; fi
             if grep -qiE "already exists|already published|duplicate|conflict" publish-registry.log; then
               echo "::notice::this server.json version is already in the MCP Registry - nothing to do."
-              exit 0
+              code=0
+              break
             fi
-            if grep -qi "permission" publish-registry.log; then
-              echo "::error::the OIDC token was not granted the io.github.xlbbb-cn namespace. Check that the registry's GitHub auth maps this repository's owner (xlbbb-cn) to the namespace used in server.json."
-            fi
+            if [ $attempt -eq 1 ]; then echo "publish failed, retrying in 30s..."; sleep 30; fi
+          done
+          set -e
+          if [ $code -ne 0 ]; then
+            # Job logs need admin rights - surface the error in a public
+            # annotation and in the step summary instead.
+            echo "::error::MCP Registry publish failed: $(tr '\n' ' ' < publish-registry.log | tail -c 2000)"
+            {
+              echo "### MCP Registry publish failed"
+              echo '```'
+              cat publish-registry.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit $code
           fi
