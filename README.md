@@ -84,11 +84,45 @@ The build output lands in `dist/` and provides two binaries:
 | `remote-ssh-server` | `dist/index.js` | the stdio MCP server (started by your MCP client) |
 | `remote-ssh-cli` | `dist/cli.js` | interactive / batch host-management CLI |
 
+### Install from GitHub Packages
+
+The package is published to the **GitHub Packages** npm registry as
+`@xlbbb-cn/mcp_ssh_exec_cmd`:
+
+```bash
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
+```
+
+GitHub Packages requires authentication for installs as well — even for public
+packages — so give npm a personal access token (classic) with the
+`read:packages` scope first:
+
+```bash
+npm login --scope=@xlbbb-cn --auth-type=legacy --registry=https://npm.pkg.github.com
+# Username: <your GitHub username>
+# Password: <your PAT>
+```
+
+The same thing can be written into `~/.npmrc`:
+
+```ini
+//npm.pkg.github.com/:_authToken=<PAT>
+@xlbbb-cn:registry=https://npm.pkg.github.com
+```
+
 ### Global install (CLI)
+
+From a local checkout:
 
 ```bash
 npm run build
 npm install -g --allow-scripts=ssh2,cpu-features .
+```
+
+Or straight from GitHub Packages:
+
+```bash
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
 ```
 
 Afterwards `remote-ssh-cli` is on your `PATH`:
@@ -158,17 +192,23 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
   "mcpServers": {
     "ssh": {
       "command": "npx",
-      "args": ["-y", "-p", "file:./mcp-ssh-server", "remote-ssh-server"]
+      "args": [
+        "--registry=https://npm.pkg.github.com",
+        "-y",
+        "-p",
+        "@xlbbb-cn/mcp_ssh_exec_cmd",
+        "remote-ssh-server"
+      ]
     }
   }
 }
 ```
 
 The `file:` form points `npx` straight at your local checkout — handy while
-developing. Once the package is published to npm the path can be dropped:
+developing, and it needs no registry at all:
 
 ```json
-"args": ["-y", "remote-ssh-cmd"]
+"args": ["-y", "-p", "file:./mcp_ssh_exec_cmd", "remote-ssh-server"]
 ```
 
 ## Configuration
@@ -299,6 +339,28 @@ configuration. The tests execute `dist/`, so build before testing.
 
 Run a single file with `node test/<file>.mjs`. Every test isolates its state in
 a temporary `MCP_SSH_CONFIG_DIR`, so your real `hosts.json` is never touched.
+
+## Releasing
+
+Releases are published to **GitHub Packages** by a GitHub Actions workflow
+(`.github/workflows/publish.yml`). It builds, runs the smoke tests and
+publishes with the built-in `GITHUB_TOKEN` — no long-lived secret is stored in
+the repository — and npm provenance is attached to the tarball.
+
+```bash
+# 1. bump the version in package.json, commit
+git commit -am "chore: release v0.1.1" && git push github master
+
+# 2. tag it — the tag triggers the publish workflow
+git tag v0.1.1
+git push github v0.1.1
+```
+
+The workflow can also be started by hand from the **Actions** tab
+(`workflow_dispatch`); tick `dry_run` to verify the tarball without publishing.
+
+The resulting package shows up under
+<https://github.com/xlbbb-cn/mcp_ssh_exec_cmd/packages>.
 
 ## Relation to the FastAPI backend
 

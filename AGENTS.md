@@ -20,7 +20,7 @@ Standalone stdio MCP server (TypeScript/ESM) for local SSH host storage and remo
 - `src/storage.ts` — `HostStore`: one `hosts.json`, loaded once into memory, atomic full-file rewrite (`.tmp` + rename). External edits while running are ignored; concurrent writers can overwrite each other.
 - `src/csv.ts` / `src/importer.ts` — RFC 4180 CSV reader, host-row mapping, and the bulk-import orchestration.
 - `src/crypto.ts`, `src/master_key.ts`, `src/paths.ts` — AES-256-GCM secrets, master-key resolution, config paths.
-- `src/cli.ts` — CLI/TUI entrypoint. Package name is `remote-ssh-cmd`; bins are `remote-ssh-server` (`dist/index.js`) and `remote-ssh-cli` (`dist/cli.js`).
+- `src/cli.ts` — CLI/TUI entrypoint. Package name is `@xlbbb-cn/mcp_ssh_exec_cmd`; bins are `remote-ssh-server` (`dist/index.js`) and `remote-ssh-cli` (`dist/cli.js`).
 
 ## Invariants and gotchas
 
@@ -36,3 +36,4 @@ Standalone stdio MCP server (TypeScript/ESM) for local SSH host storage and remo
 - CSV import must not abort a whole file on one bad row: every row ends up created / skipped (duplicate IP) / failed, and `npm test` asserts this.
 - Both smoke tests isolate state with a temp `MCP_SSH_CONFIG_DIR`; preserve that isolation in new tests.
 - README documents the CLI commands, the CSV column table, the pool env vars and the timeout semantics — update it in the same change whenever tool or CLI behaviour changes.
+- The package is published to **GitHub Packages** as `@xlbbb-cn/mcp_ssh_exec_cmd` (scope must match the owner). `.npmrc` routes `@xlbbb-cn:` to `https://npm.pkg.github.com`; `publishConfig.registry` pins the publish target. Releases are driven by `.github/workflows/publish.yml` — push a `v*` tag to publish with the built-in `GITHUB_TOKEN`. Never commit a token into `.npmrc`.

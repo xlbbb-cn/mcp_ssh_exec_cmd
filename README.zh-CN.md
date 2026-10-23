@@ -49,11 +49,43 @@ npm run build
 | `remote-ssh-server` | `dist/index.js` | stdio MCP 服务器（被 MCP 客户端启动） |
 | `remote-ssh-cli` | `dist/cli.js` | 交互式 / 命令行主机管理 TUI |
 
+### 从 GitHub Packages 安装
+
+包已发布到 **GitHub Packages** 的 npm registry，包名为 `@xlbbb-cn/mcp_ssh_exec_cmd`：
+
+```bash
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
+```
+
+GitHub Packages 即使对公开包也要求先认证：准备一个带 `read:packages` 权限的
+personal access token (classic)，然后登录：
+
+```bash
+npm login --scope=@xlbbb-cn --auth-type=legacy --registry=https://npm.pkg.github.com
+# Username: <你的 GitHub 用户名>
+# Password: <你的 PAT>
+```
+
+也可以直接写进 `~/.npmrc`：
+
+```ini
+//npm.pkg.github.com/:_authToken=<PAT>
+@xlbbb-cn:registry=https://npm.pkg.github.com
+```
+
 ### 全局安装（CLI 管理工具）
+
+从本地源码安装：
 
 ```bash
 npm run build
 npm install -g --allow-scripts=ssh2,cpu-features .
+```
+
+或直接从 GitHub Packages 安装：
+
+```bash
+npm install -g @xlbbb-cn/mcp_ssh_exec_cmd --registry=https://npm.pkg.github.com
 ```
 
 之后可直接使用 `remote-ssh-cli` 命令管理 SSH 主机：
@@ -109,15 +141,21 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
   "mcpServers": {
     "ssh": {
       "command": "npx",
-      "args": ["-y", "-p", "file:./mcp-ssh-server", "remote-ssh-server"]
+      "args": [
+        "--registry=https://npm.pkg.github.com",
+        "-y",
+        "-p",
+        "@xlbbb-cn/mcp_ssh_exec_cmd",
+        "remote-ssh-server"
+      ]
     }
   }
 }
 ```
 
-> 仓库内首次使用推荐用 `file:./mcp-ssh-server` 让 npx 直接走本地源码；发布到 npm 后可省略路径：
+> 仓库内首次使用推荐用 `file:./mcp_ssh_exec_cmd` 让 npx 直接走本地源码（完全不需要 registry）：
 > ```json
-> "args": ["-y", "remote-ssh-cmd"]
+> "args": ["-y", "-p", "file:./mcp_ssh_exec_cmd", "remote-ssh-server"]
 > ```
 
 ## 配置
@@ -177,6 +215,25 @@ node test/smoke.mjs
 node test/features_smoke.mjs
 node test/mcp_smoke.mjs
 ```
+
+## 发布
+
+发布走 **GitHub Packages**，由 GitHub Actions 工作流（`.github/workflows/publish.yml`）完成：
+它会构建、跑冒烟测试，再用内置的 `GITHUB_TOKEN` 发布 —— 仓库里不需要存放任何长期密钥 ——
+同时给 tarball 附上 npm provenance。
+
+```bash
+# 1. 在 package.json 里改版本号并提交
+git commit -am "chore: release v0.1.1" && git push github master
+
+# 2. 打 tag —— tag 会触发发布工作流
+git tag v0.1.1
+git push github v0.1.1
+```
+
+也可以在 **Actions** 页面手动触发（`workflow_dispatch`），勾选 `dry_run` 只校验 tarball、不真正发布。
+
+发布结果见 <https://github.com/xlbbb-cn/mcp_ssh_exec_cmd/packages>。
 
 ## 与 FastAPI 后端的关系
 

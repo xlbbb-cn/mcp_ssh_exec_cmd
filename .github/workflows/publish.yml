@@ -1,0 +1,61 @@
+name: Publish to GitHub Packages
+
+# Publishes the package to the GitHub Packages npm registry
+# (https://npm.pkg.github.com) using the built-in GITHUB_TOKEN, so no
+# long-lived secret has to be stored in the repository.
+#
+# Trigger it by pushing a version tag:
+#     git tag v0.1.0 && git push github v0.1.0
+# or manually from the Actions tab (workflow_dispatch).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only verify what would be published, do not publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # required for npm provenance
+
+jobs:
+  publish:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+          scope: "@xlbbb-cn"
+
+      - name: Install dependencies
+        run: npm ci --allow-scripts=ssh2,cpu-features
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Verify package contents
+        run: npm publish --dry-run --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

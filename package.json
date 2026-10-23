@@ -1,7 +1,7 @@
 {
-    "name": "remote-ssh-cmd",
+    "name": "@xlbbb-cn/mcp_ssh_exec_cmd",
     "version": "0.1.0",
-    "private": true,
+    "private": false,
     "description": "Standalone stdio MCP server that exposes SSH host storage and remote command execution as MCP tools. Sibling to the FastAPI app in this monorepo; launched via `npx`.",
     "type": "module",
     "bin": {
@@ -11,15 +11,40 @@
     "main": "./dist/index.js",
     "files": [
         "dist",
-        "README.md"
+        "README.md",
+        "README.zh-CN.md"
     ],
     "scripts": {
         "build": "tsc -p tsconfig.json",
         "start": "node dist/index.js",
         "dev": "tsc -p tsconfig.json --watch",
         "test": "node test/smoke.mjs && node test/features_smoke.mjs && node test/mcp_smoke.mjs",
-        "tui": "node dist/cli.js"
+        "tui": "node dist/cli.js",
+        "prepublishOnly": "npm run build"
     },
+    "publishConfig": {
+        "registry": "https://npm.pkg.github.com",
+        "access": "public"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/xlbbb-cn/mcp_ssh_exec_cmd.git"
+    },
+    "homepage": "https://github.com/xlbbb-cn/mcp_ssh_exec_cmd#readme",
+    "bugs": {
+        "url": "https://github.com/xlbbb-cn/mcp_ssh_exec_cmd/issues"
+    },
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "ssh",
+        "agent",
+        "stdio",
+        "cli",
+        "remote-execution",
+        "llm-tools"
+    ],
+    "license": "MIT",
     "engines": {
         "node": ">=18.17.0"
     },
