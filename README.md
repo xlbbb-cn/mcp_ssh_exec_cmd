@@ -71,8 +71,8 @@ hello
 ## Quick start
 
 ```bash
-git clone <this-repo> mcp-ssh-server
-cd mcp-ssh-server
+git clone https://github.com/xlbbb-cn/mcp_ssh_exec_cmd.git
+cd mcp_ssh_exec_cmd
 npm install
 npm run build
 ```
