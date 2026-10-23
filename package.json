@@ -1,6 +1,6 @@
 {
     "name": "@xlbbb-cn/mcp_ssh_exec_cmd",
-    "version": "0.1.0",
+    "version": "0.1.2",
     "private": false,
     "description": "Standalone stdio MCP server that exposes SSH host storage and remote command execution as MCP tools. Sibling to the FastAPI app in this monorepo; launched via `npx`.",
     "type": "module",
