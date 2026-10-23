@@ -5,8 +5,8 @@
     "description": "Standalone stdio MCP server that exposes SSH host storage and remote command execution as MCP tools. Sibling to the FastAPI app in this monorepo; launched via `npx`.",
     "type": "module",
     "bin": {
-        "remote-ssh-server": "./dist/index.js",
-        "remote-ssh-cli": "./dist/cli.js"
+        "remote-ssh-server": "dist/index.js",
+        "remote-ssh-cli": "dist/cli.js"
     },
     "main": "./dist/index.js",
     "files": [
