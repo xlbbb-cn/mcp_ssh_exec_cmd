@@ -90,6 +90,7 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
 - 引号内的逗号、换行、`""` 转义都按 RFC 4180 解析，私钥内容不会被拆坏。
 - **单行错误不会中断整批导入**：每行最终会被归类为 created / skipped（IP 重复）/ failed（数据非法），命令以摘要形式打印，失败行数 > 0 时退出码为 1。
 - `--dry-run` 只做校验与报告，不写盘。
+- CSV 模板（表头 + 示例行）会打印在 `remote-ssh-cli` 的 TUI 横幅里；`remote-ssh-cli import` 不带文件参数时也会打印同样的内容。
 
 > **Windows 注意**：如果遇到 `JScript 编译错误 (800A03EA)`，请确保 npm 版本 >= 10.8.0，或直接在 **cmd.exe** 中运行（而非 PowerShell），因为 npm 生成的 `.ps1` 包装脚本在旧版本中可能不会显式调用 `node`。本包已为入口文件添加 `#!/usr/bin/env node` shebang。
 

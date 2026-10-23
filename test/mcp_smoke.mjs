@@ -52,12 +52,17 @@ function send(method, params = {}) {
     return id;
 }
 
+// The handshake can be slow on a cold Windows start (AV scanning the
+// freshly spawned node process, master-key generation, ...), so the
+// response timeout is generous — a healthy server answers in ~100ms.
+const RESPONSE_TIMEOUT_MS = 20000;
+
 const ok = (id) =>
     new Promise((resolve, reject) => {
         const t = setTimeout(() => {
             responses.delete(id);
             reject(new Error(`timed out waiting for id=${id}`));
-        }, 5000);
+        }, RESPONSE_TIMEOUT_MS);
         responses.set(id, {
             resolve: (v) => {
                 clearTimeout(t);

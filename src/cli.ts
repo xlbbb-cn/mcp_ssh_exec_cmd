@@ -8,6 +8,28 @@ import * as readline from "readline";
 
 const USAGE = "usage: remote-ssh-cli <command> [args]";
 
+/** Header row expected by `remote-ssh-cli import`. */
+const CSV_TEMPLATE_HEADER =
+  "ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password";
+
+/** Example row matching {@link CSV_TEMPLATE_HEADER}. */
+const CSV_TEMPLATE_EXAMPLE =
+  "192.168.1.100,web-01,22,root,password,secret";
+
+/**
+ * Short description of the accepted CSV columns, shown in the TUI
+ * banner and by `import` when it is called without a file.
+ */
+const CSV_TEMPLATE_HINT = [
+  `CSV template: ${CSV_TEMPLATE_HEADER}`,
+  "               [ssh_private_key|ssh_private_key_path] [ssh_private_key_passphrase] [is_enable]",
+  `e.g.           ${CSV_TEMPLATE_EXAMPLE}`,
+].join("\n");
+
+function printCsvTemplate(): void {
+  console.log(CSV_TEMPLATE_HINT);
+}
+
 function printHost(host: Record<string, unknown>) {
   const { id, ip_address, system_name, ssh_username, ssh_port, ssh_auth_method } = host;
   console.log(`${id} | ${system_name ?? "(no name)"} (${ssh_username}@${ip_address}:${ssh_port}) [${ssh_auth_method}]`);
@@ -91,6 +113,7 @@ async function main() {
     while (true) {
       const choice = await ask(
         `\nSSH Host Manager
+${CSV_TEMPLATE_HINT}
 1) List hosts
 2) Get host
 3) Create host
@@ -252,7 +275,11 @@ Choose: `
       }
       case "import": {
         const file = args[1];
-        if (!file) { console.error(`${USAGE} import <csv-file> [--dry-run]`); process.exit(1); }
+        if (!file) {
+          console.error(`${USAGE} import <csv-file> [--dry-run]`);
+          printCsvTemplate();
+          process.exit(1);
+        }
         const code = await runImport(store, file, args.includes("--dry-run"));
         if (code !== 0) process.exit(code);
         break;
