@@ -18,11 +18,12 @@ and talk to it over JSON-RPC.
 - **Standards-compliant stdio MCP** — speaks the [Model Context Protocol](https://modelcontextprotocol.io/) stdio transport and can be launched with `npx`.
 - **Credentials never leave the server** — host tool responses never contain a password or a private key; the SSH tools decrypt them internally to open a connection and never echo them back.
 - **Connection pooling** — one live SSH session per host, reused across commands and playbook steps.
-- **CLI companion** — `remote-ssh-cli` manages the very same store (interactive TUI, batch commands, CSV bulk import).
+- **Pool monitoring** — `pool_status` renders the live pool as a desensitized table: uid, name, connection state, executed / failed commands and the last command (secrets and IP addresses masked).
+- **CLI companion** — `remote-ssh-cli` manages the very same store (interactive TUI, batch commands, CSV bulk import) and can **monitor the connection pool live** (one frame per second, `q` quits).
 
 ## MCP tools
 
-Eight tools are published:
+Nine tools are published:
 
 | Tool | Description |
 |---|---|
@@ -34,6 +35,7 @@ Eight tools are published:
 | `ssh_run_command` | Run a single non-interactive command on a host |
 | `ssh_run_interactive` | Run a command that answers prompts (`sudo`, …) through `expect`/`answer` pairs |
 | `ssh_run_playbook` | Run a multi-step playbook (structured `# @…` directives *or* legacy `expect:`/`answer:` lines) |
+| `pool_status` | Monitor the live connection pool — one desensitized row per host (uid, name, state, executed / failed commands, last command) |
 
 ### The host identifier contract
 
@@ -48,7 +50,7 @@ Eight tools are published:
 
 | Tool | Arguments |
 |---|---|
-| `cli_help` | `topic?` — one of `install`, `list`, `get`, `create`, `update`, `delete`, `import`, `tui`, `windows` |
+| `cli_help` | `topic?` — one of `install`, `list`, `get`, `create`, `update`, `delete`, `import`, `monitor`, `tui`, `windows` |
 | `host_list` | `enabled_only?` (bool) |
 | `host_create` | `ip_address` (required), `system_name?`, `ssh_port?` (1-65535, default `22`), `ssh_username?` (default `root`), `ssh_auth_method?` (`password` \| `pubkey`), `ssh_password?`, `ssh_private_key?`, `ssh_private_key_passphrase?`, `is_enable?` (default `true`) |
 | `host_update` | `host_id` (required) plus any of the fields above — an omitted field keeps its current value |
@@ -56,6 +58,7 @@ Eight tools are published:
 | `ssh_run_command` | `host_id`, `command`, `timeout_seconds` (1-600, **required**) |
 | `ssh_run_interactive` | `host_id`, `command`, `expects?` (`[{ expect, answer }]`), `timeout_seconds` |
 | `ssh_run_playbook` | `host_id`, `content` (the multi-line playbook body), `timeout_seconds` |
+| `pool_status` | `host_id?` (one host only), `format?` (`table` \| `json`), `include_history?` (bool), `include_idle_hosts?` (bool) |
 
 `ip_address` is unique across the store — creating a duplicate fails.
 
@@ -136,6 +139,7 @@ remote-ssh-cli create <json-file>
 remote-ssh-cli update <host_id> <json-file>
 remote-ssh-cli delete <host_id>
 remote-ssh-cli import <csv-file> [--dry-run]
+remote-ssh-cli monitor                # live connection-pool monitor (q quits)
 ```
 
 `create` / `update` take a JSON file, e.g.:
@@ -182,6 +186,54 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
 - The CSV template (header + example row) is printed in the `remote-ssh-cli` banner, and `remote-ssh-cli import` without a file argument prints the same thing.
 
 > **Windows note:** if you hit `JScript runtime error (800A03EA)`, make sure npm is >= 10.8.0 or run the command from **cmd.exe** instead of PowerShell — the `.ps1` wrapper npm generates may not invoke `node` explicitly on older npm versions. Both entry points ship a `#!/usr/bin/env node` shebang.
+
+### Monitor the connection pool
+
+`remote-ssh-cli monitor` opens a live view of the SSH connection pool. The
+screen is redrawn **once per second** and the view is left with the **`q`**
+key (Ctrl+C works as well):
+
+```text
+SSH connection pool monitor · 15:05:31 · tick 42 · refresh 1000ms · last tick 41ms
+pool 2/32 connections · idle timeout 1m00s · probe timeout 5s · press q to quit
+
+HOST          ADDRESS       USER   STATUS    LATENCY  LAST OK  POOL
+------------  ------------  -----  --------  -------  -------  ----
+web-01        192.168.1.100 root   up        12ms     15:05:30 1m05s
+db-01         10.0.0.5:2222 deploy down      8ms      -        -
+
+problems (1):
+  db-01 (10.0.0.5:2222): connect ECONNREFUSED 10.0.0.5:2222
+```
+
+| Column | Meaning |
+|---|---|
+| `STATUS` | `up` (the probe succeeded), `down` (the connection failed) or `disabled` (the host is switched off — it is listed but never probed) |
+| `LATENCY` | how long the last probe took, end to end |
+| `LAST OK` | clock time of the last successful probe |
+| `POOL` | age of the pooled connection — how long the session has been reused without being re-established |
+
+- The monitor keeps the pool **warm**: every host is probed through the very
+  same `ConnectionPool` the SSH tools use, so the connections it shows are
+  real, reusable sessions.
+- The CLI runs its **own** pool — the MCP server is a separate process, so its
+  connections cannot be inspected from the terminal.
+- The default probe command is `echo` (it exists in a POSIX shell *and* in
+  `cmd.exe`); every probe runs once per interval, so keep `--interval`
+  reasonable on large host lists.
+- Without a terminal (a pipe, a CI job) the monitor prints a single frame
+  instead of looping — there would be no key to stop it.
+
+| Option | Description | Default |
+|---|---|---|
+| `--interval <ms>` | redraw interval | `1000` |
+| `--timeout <s>` | per-host probe timeout (1-600 s) | `5` |
+| `--probe-cmd <cmd>` | command used to probe a host | `echo` |
+| `--host <host_id>` | monitor only this host (repeatable) | all hosts |
+| `--all` | also list disabled hosts (never probed) | off |
+| `--once` | print a single frame and exit | off |
+
+The same view is available from the interactive TUI (`7) Monitor connection pool`).
 
 ### Register it with an MCP client
 
@@ -235,6 +287,36 @@ Everything is configured through environment variables:
 - The pool is keyed on the host id **plus a fingerprint of the credentials**. Changing the address, port, user name, auth method, password or key invalidates the cached connection right away; `host_update` and `host_delete` drop it explicitly.
 - Idle connections are closed after `MCP_SSH_POOL_IDLE_MS`. A connection the peer dropped in the meantime is transparently re-established on the next use (one retry).
 - All pooled connections are closed when the process exits (i.e. when the MCP client disconnects).
+- `remote-ssh-cli monitor` shows the pool live (see [Monitor the connection pool](#monitor-the-connection-pool)); it honours the same two environment variables.
+
+### Monitoring the pool from MCP
+
+`pool_status` renders the state of the **MCP server's own** pool as a table —
+one row per host that has a pooled connection or command traffic:
+
+```text
+SSH connection pool · 1/32 connections · idle timeout 1m00s · 2 commands executed · 1 failed · updated 15:24:16
+Commands and error messages are desensitized (secrets masked, IP addresses replaced).
+
+UID                                   SYS_NAME  STATE   EXECUTED  FAILED  LAST CMD                 LAST RESULT  LAST ERROR                     LAST RUN  POOL AGE
+------------------------------------  --------  ------  --------  ------  -----------------------  -----------  -----------------------------  --------  --------
+9bcb7682-537b-4837-8b9e-6e37b4c61cdc  web-01    pooled  3         1       systemctl restart nginx  exit=1       connect to *** port 22 failed  12s ago   1m05s
+```
+
+| Column | Meaning |
+|---|---|
+| `UID` | the host id — the same value `host_list` returns as `uid` |
+| `SYS_NAME` | the host name |
+| `STATE` | `pooled` (a live, idle connection), `busy` (a command is running), `down` (the connection broke), `idle` (commands ran, no connection open), `new` (never used) |
+| `EXECUTED` / `FAILED` | how many commands ran on the host, and how many of them failed |
+| `LAST CMD` / `LAST RESULT` | the last command and its outcome (`ok`, `exit=1`, `timeout`, `error`) |
+| `LAST ERROR` | the redacted error message of the last failure |
+| `LAST RUN` | how long ago the last command ran |
+| `POOL AGE` | how long the pooled connection has been reused |
+
+- The table is **desensitized**: credentials are masked (`mysql -pS3cret` → `mysql -p***`), IP addresses are replaced (`10.0.0.5` → `***`), and no address, port, user name or credential of a host is ever shown.
+- `format: "json"` returns the same information as a JSON document, `include_history: true` adds the most recent commands per host, `include_idle_hosts: true` also lists hosts without traffic, and `host_id` narrows the view to a single host.
+- The counters live in the server process: they describe the commands **this** MCP server ran and are reset when it restarts. The CLI monitor is a separate process and shows its own pool.
 
 ### Timeout semantics
 
@@ -306,7 +388,8 @@ Keep the whole directory out of version control:
 src/
   index.ts        MCP entry point — stdio transport, tool registration, dispatch
   cli.ts          remote-ssh-cli — interactive TUI + batch subcommands
-  pool.ts         ConnectionPool — one live SSH connection per host
+  monitor.ts      live connection-pool monitor (one frame per second, q quits)
+  pool.ts         ConnectionPool — one live SSH connection per host + the command counters
   ssh.ts          ssh2 execution primitives + playbook parser/runner
   storage.ts      HostStore — hosts.json load/save with an atomic full-file rewrite
   csv.ts          RFC 4180 CSV reader + host-row mapping
@@ -314,14 +397,17 @@ src/
   crypto.ts       AES-256-GCM encryption of secrets at rest
   master_key.ts   master-key resolution (env var or key file)
   paths.ts        configuration-directory paths
+  redact.ts       masks secrets and IP addresses in commands and error messages
   tools/
     _types.ts     shared MCP tool shape + the host-identifier wording
     hosts.ts      host_list / host_create / host_update / host_delete
     ssh_exec.ts   ssh_run_command / ssh_run_interactive / ssh_run_playbook
+    pool_status.ts  pool_status — the desensitized pool table
     help.ts       cli_help
 test/
   smoke.mjs         encryption round-trip, HostStore CRUD, playbook parsing
   features_smoke.mjs  CSV parsing/import, connection pool behaviour
+  monitor_smoke.mjs   monitor frames, the refresh loop, the 'q' shortcut
   mcp_smoke.mjs     end-to-end JSON-RPC handshake against a spawned server
 ```
 
@@ -330,7 +416,7 @@ test/
 ```bash
 npm run dev    # tsc --watch
 npm run build  # tsc  (the only typecheck)
-npm test       # all three smoke tests
+npm test       # all four smoke tests
 ```
 
 `npm run build` is the verification step — there is no separate lint or format
@@ -338,11 +424,12 @@ configuration. The tests execute `dist/`, so build before testing.
 
 ### Smoke tests
 
-`npm test` runs three plain Node scripts; none of them needs a real SSH server:
+`npm test` runs four plain Node scripts; none of them needs a real SSH server:
 
 - `test/smoke.mjs` — encrypt/decrypt round-trip, the full HostStore CRUD path (encrypt on write, read back, list, update, delete) and playbook parsing for both formats.
-- `test/features_smoke.mjs` — CSV parsing and host-row mapping, bulk import (including `--dry-run` and duplicate-IP skipping), connection-pool reuse / credential-change invalidation / idle eviction, and playbook parsing edge cases.
-- `test/mcp_smoke.mjs` — spawns the MCP server as a child process, performs the JSON-RPC handshake and asserts that all 8 tools are registered, that `host_list` exposes only `sys_name` + `uid`, that `host_get` is *not* advertised, and that no password ever appears in a response.
+- `test/features_smoke.mjs` — CSV parsing and host-row mapping, bulk import (including `--dry-run` and duplicate-IP skipping), connection-pool reuse / credential-change invalidation / idle eviction, playbook parsing edge cases, the redaction of commands and errors, and the `pool_status` table.
+- `test/monitor_smoke.mjs` — the connection-pool monitor: frame rendering, the one-frame-per-interval loop, the `q` shortcut, the SSH probe (against a fake client) and the pool snapshot.
+- `test/mcp_smoke.mjs` — spawns the MCP server as a child process, performs the JSON-RPC handshake and asserts that all 9 tools are registered, that `host_list` exposes only `sys_name` + `uid`, that `host_get` is *not* advertised, that `pool_status` returns a desensitized table, and that no password ever appears in a response.
 
 Run a single file with `node test/<file>.mjs`. Every test isolates its state in
 a temporary `MCP_SSH_CONFIG_DIR`, so your real `hosts.json` is never touched.

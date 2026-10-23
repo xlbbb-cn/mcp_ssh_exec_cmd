@@ -33,6 +33,7 @@ import { getConfigDir, getHostsFilePath } from "./paths.js";
 import { ConnectionPool } from "./pool.js";
 import { buildHelpTool } from "./tools/help.js";
 import { buildHostTools } from "./tools/hosts.js";
+import { buildPoolTools } from "./tools/pool_status.js";
 import { buildSshTools } from "./tools/ssh_exec.js";
 import type { McpTool } from "./tools/_types.js";
 
@@ -50,6 +51,7 @@ async function buildServer(): Promise<{ server: Server; pool: ConnectionPool }> 
         ...buildHelpTool(),
         ...buildHostTools(store, pool),
         ...buildSshTools(store, pool),
+        ...buildPoolTools(store, pool),
     ];
 
     const server = new Server(

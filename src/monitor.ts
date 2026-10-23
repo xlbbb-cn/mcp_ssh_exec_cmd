@@ -104,6 +104,19 @@ export interface ProbeOutcome {
 /** Probes one host and reports whether it is reachable. */
 export type ProbeFn = (host: MonitorHost) => Promise<ProbeOutcome>;
 
+/**
+ * The part of a terminal input stream the monitor needs.  Keeping it
+ * minimal makes the key handling testable without a real TTY.
+ */
+export interface MonitorInput {
+    isTTY?: boolean;
+    setRawMode?: (mode: boolean) => void;
+    resume?: () => void;
+    pause?: () => void;
+    on: (event: string, listener: (chunk: Buffer) => void) => void;
+    removeListener: (event: string, listener: (chunk: Buffer) => void) => void;
+}
+
 export interface PoolMonitorOptions {
     /** Hosts to monitor (disabled ones are shown but not probed). */
     hosts: MonitorHost[];
@@ -123,6 +136,8 @@ export interface PoolMonitorOptions {
     once?: boolean;
     /** Terminal width used for the layout. Defaults to stdout's width. */
     width?: number;
+    /** Stream that carries the quit key. Defaults to stdin. */
+    input?: MonitorInput;
 }
 
 // ── formatting helpers ─────────────────────────────────────────────────────
@@ -202,6 +217,28 @@ function layoutColumns(
     return widths;
 }
 
+/**
+ * Join `segments` with `sep` so the result fits into `width`.  The last
+ * segment is always kept — it carries the quit hint.
+ */
+function fitSegments(
+    segments: string[],
+    width: number,
+    sep = " · ",
+): string {
+    const last = segments[segments.length - 1] ?? "";
+    const head = segments.slice(0, -1);
+    const budget = Math.max(0, width - last.length - sep.length);
+    const kept: string[] = [];
+    for (const segment of head) {
+        const candidate = [...kept, segment].join(sep);
+        if (candidate.length > budget) break;
+        kept.push(segment);
+    }
+    const line = [...kept, last].join(sep);
+    return line.length <= width ? line : truncate(line, width);
+}
+
 /** Render one frame of the monitor as a block of text. */
 export function formatMonitorFrame(
     frame: MonitorFrame,
@@ -227,10 +264,27 @@ export function formatMonitorFrame(
 
     const lines: string[] = [];
     lines.push(
-        `SSH connection pool monitor · ${formatClock(frame.updatedAt)} · tick ${frame.tick} · refresh ${frame.intervalMs}ms · last tick ${frame.tickMs}ms`,
+        fitSegments(
+            [
+                "SSH connection pool monitor",
+                formatClock(frame.updatedAt),
+                `tick ${frame.tick}`,
+                `refresh ${frame.intervalMs}ms`,
+                `last tick ${frame.tickMs}ms`,
+            ],
+            available,
+        ),
     );
     lines.push(
-        `pool ${frame.poolSize}/${frame.poolMaxHosts} connections · idle timeout ${formatDuration(frame.poolIdleMs)} · probe timeout ${frame.probeTimeoutSeconds}s · press q to quit`,
+        fitSegments(
+            [
+                `pool ${frame.poolSize}/${frame.poolMaxHosts} connections`,
+                `idle timeout ${formatDuration(frame.poolIdleMs)}`,
+                `probe timeout ${frame.probeTimeoutSeconds}s`,
+                "press q to quit",
+            ],
+            available,
+        ),
     );
     lines.push("");
     lines.push(line(COLUMN_TITLES));
@@ -249,7 +303,7 @@ export function formatMonitorFrame(
             const label = `${problem.host.system_name || problem.host.id} (${problem.host.ip_address}:${problem.host.ssh_port})`;
             const indent = "  ";
             const room = Math.max(10, available - indent.length);
-            lines.push(`${indent}${truncate(label, room)}: ${truncate(problem.error ?? "", room)}`);
+            lines.push(indent + truncate(`${label}: ${problem.error}`, room));
         }
     }
 
@@ -310,9 +364,8 @@ export function createSshProbe(options: SshProbeOptions): ProbeFn {
  * Listen for the quit key.  ``q`` (and Ctrl+C) stop the monitor; the
  * terminal is put back into its normal mode afterwards.
  */
-function attachQuitKeys(onQuit: () => void): () => void {
-    const stdin = process.stdin;
-    if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
+function attachQuitKeys(input: MonitorInput, onQuit: () => void): () => void {
+    if (!input.isTTY || typeof input.setRawMode !== "function") {
         // Not an interactive terminal — there is no key to read.
         return () => {};
     }
@@ -329,22 +382,23 @@ function attachQuitKeys(onQuit: () => void): () => void {
         }
     };
 
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.on("data", onData);
+    const setRawMode = input.setRawMode.bind(input);
+    setRawMode(true);
+    input.resume?.();
+    input.on("data", onData);
 
     const onSigint = () => onQuit();
     process.on("SIGINT", onSigint);
 
     return () => {
-        stdin.removeListener("data", onData);
+        input.removeListener("data", onData);
         process.removeListener("SIGINT", onSigint);
         try {
-            stdin.setRawMode(false);
+            setRawMode(false);
         } catch {
             // ignore
         }
-        stdin.pause();
+        input.pause?.();
     };
 }
 
@@ -397,7 +451,12 @@ export async function runPoolMonitor(
         wake?.();
     };
 
-    const detachKeys = attachQuitKeys(requestQuit);
+    const input = options.input ?? process.stdin;
+    // Without a terminal there is no key to read, so the live view would
+    // never end — a single frame is printed instead.
+    const hasTerminal = Boolean(input.isTTY);
+    const interactive = hasTerminal && !options.once;
+    const detachKeys = attachQuitKeys(input, requestQuit);
 
     const sleep = (ms: number) =>
         new Promise<void>((resolve) => {
@@ -480,8 +539,13 @@ export async function runPoolMonitor(
     };
 
     try {
+        if (!hasTerminal && !options.once) {
+            write(
+                "stdin is not a terminal — printing a single frame (run the monitor in a terminal for the live view).\n",
+            );
+        }
         await tickOnce();
-        if (options.once) return 0;
+        if (!interactive) return 0;
         while (!quitting) {
             await sleep(intervalMs);
             if (quitting) break;

@@ -224,24 +224,40 @@ function isConnectionFailure(err: unknown): boolean {
 }
 
 /**
+ * Describe why a command failed.  Used for the command statistics the
+ * pool keeps (and which the monitoring tool reports).
+ */
+function failureReason(result: CommandResult): string {
+    const stderr = result.stderr?.trim();
+    if (stderr) return stderr;
+    if (result.exit_code === null) return "command did not produce an exit code";
+    return `command exited with code ${result.exit_code}`;
+}
+
+/**
  * Run `fn` with a connection for `creds`.  Uses the pool when one is
  * supplied, otherwise opens (and closes) a dedicated connection.
  *
  * A connection-level failure is retried once on a fresh connection —
  * a pooled socket may have been closed by the peer while it was idle.
+ *
+ * Every command is reported to the pool so that the monitoring tool can
+ * show what ran on which host.
  */
-async function runWithConnection<T>(
+async function runWithConnection(
     creds: HostCreds,
+    command: string,
     timeoutSeconds: number,
     options: SshRunnerOptions,
-    fn: (client: Client) => Promise<T>,
-): Promise<T> {
+    fn: (client: Client) => Promise<CommandResult>,
+): Promise<CommandResult> {
     const pool = options.pool;
     let lastError: unknown;
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
         let lease: PoolLease | null = null;
         let client: Client | null = null;
+        const started = Date.now();
         try {
             if (pool) {
                 lease = await pool.acquire(creds, timeoutSeconds);
@@ -249,13 +265,30 @@ async function runWithConnection<T>(
             } else {
                 client = await openConnection(creds, timeoutSeconds);
             }
-            return await fn(client);
+            const result = await fn(client);
+            pool?.recordCommand(creds.id, {
+                command: result.command,
+                success: result.success,
+                exitCode: result.exit_code,
+                error: result.success ? null : failureReason(result),
+                durationMs: result.duration_ms,
+            });
+            return result;
         } catch (err) {
             lastError = err;
             if (attempt === 0 && isConnectionFailure(err)) {
+                // The retry may still succeed, so the failure is only
+                // recorded once the command really gave up.
                 if (pool) pool.invalidate(creds.id);
                 continue;
             }
+            pool?.recordCommand(creds.id, {
+                command,
+                success: false,
+                exitCode: null,
+                error: (err as Error).message ?? String(err),
+                durationMs: Date.now() - started,
+            });
             throw err;
         } finally {
             if (!pool && client) {
@@ -282,6 +315,7 @@ export async function runCommand(
     const timeout = options.timeoutSeconds ?? DEFAULT_TIMEOUT_S;
     return runWithConnection(
         creds,
+        command,
         timeout,
         options,
         (client) => execOnClient(client, command, timeout),
@@ -299,6 +333,7 @@ export async function runInteractiveCommand(
     const timeout = options.timeoutSeconds ?? DEFAULT_TIMEOUT_S;
     return runWithConnection(
         creds,
+        command,
         timeout,
         options,
         (client) => shellOnClient(client, command, expects, timeout),
@@ -466,7 +501,7 @@ export async function runPlaybook(
             const remaining = totalTimeout - (Date.now() - started) / 1000;
             if (remaining <= 0) {
                 allSuccess = false;
-                results.push({
+                const budget = {
                     command: step.command,
                     stdout: "",
                     stderr: `[mcp-ssh] playbook exceeded its ${totalTimeout}s budget`,
@@ -474,18 +509,45 @@ export async function runPlaybook(
                     success: false,
                     duration_ms: Date.now() - started,
                     step_index: i + 1,
+                };
+                options.pool?.recordCommand(creds.id, {
+                    command: step.command,
+                    success: false,
+                    exitCode: null,
+                    error: budget.stderr,
+                    durationMs: budget.duration_ms,
                 });
+                results.push(budget);
                 break;
             }
             const r = step.expects.length
                 ? await shellOnClient(client, step.command, step.expects, remaining)
                 : await execOnClient(client, step.command, remaining);
+            options.pool?.recordCommand(creds.id, {
+                command: step.command,
+                success: r.success,
+                exitCode: r.exit_code,
+                error: r.success ? null : failureReason(r),
+                durationMs: r.duration_ms,
+            });
             results.push({ ...r, step_index: i + 1 });
             if (!r.success) {
                 allSuccess = false;
                 break;
             }
         }
+    } catch (err) {
+        // The playbook aborted (e.g. the connection died): the step that
+        // was running is recorded as a failed command.
+        const current = steps[results.length];
+        options.pool?.recordCommand(creds.id, {
+            command: current?.command ?? "",
+            success: false,
+            exitCode: null,
+            error: (err as Error).message ?? String(err),
+            durationMs: Date.now() - started,
+        });
+        throw err;
     } finally {
         if (!options.pool && client) {
             try {

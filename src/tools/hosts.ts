@@ -149,7 +149,9 @@ export function buildHostTools(store: HostStore, pool?: ConnectionPool): McpTool
             handler: async (raw) => {
                 const args = z.object(hostDeleteSchema).parse(raw);
                 const ok = await store.delete(args.host_id);
-                pool?.invalidate(args.host_id);
+                // The host is gone: drop its pooled connection *and* the
+                // command statistics the pool keeps for it.
+                pool?.forget(args.host_id);
                 return {
                     content: [
                         {

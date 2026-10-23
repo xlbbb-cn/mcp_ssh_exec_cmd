@@ -13,6 +13,9 @@
 - **零外部依赖**：Node.js 原生 `crypto` 做 AES-256-GCM 加密；纯 JS 的 [`ssh2`](https://github.com/mscdex/ssh2) 做 SSH 客户端，Windows / macOS / Linux 通吃。
 - **stdio MCP**：完全符合 [Model Context Protocol](https://modelcontextprotocol.io/) 的 stdio 传输规范，可被 `npx` 直接拉起。
 - **凭据零外泄**：host 工具的响应永远不返回密码 / 私钥；SSH 工具内部解密后只用于建立连接，响应里也不回显。
+- **连接池**：每台主机复用一条长连接，命令与 playbook 步骤不再反复握手。
+- **连接池监控**：`pool_status` 以脱敏表格展示当前连接池——uid、名称、连接状态、执行 / 失败命令数、最后一条命令（凭据与 IP 地址均被遮蔽）。
+- **CLI 伴侣**：`remote-ssh-cli` 管理同一份存储（交互式 TUI、命令行子命令、CSV 批量导入），并能**实时监控连接池**（每秒刷新一帧，按 `q` 退出）。
 
 ## 工具一览
 
@@ -26,6 +29,7 @@
 | `ssh_run_command` | 在指定主机上执行单条非交互命令 |
 | `ssh_run_interactive` | 在指定主机上执行需要 expect/answer 提示的命令（sudo 等） |
 | `ssh_run_playbook` | 在指定主机上跑多步骤 playbook（结构化 `# @on` / 旧式 `expect:`/`answer:` 都支持） |
+| `pool_status` | 监控当前连接池：每台主机一行脱敏表格（uid、名称、连接状态、执行 / 失败命令数、最后一条命令） |
 
 ### 主机标识（口径）
 
@@ -100,6 +104,7 @@ remote-ssh-cli create <json-file>
 remote-ssh-cli update <id> <json-file>
 remote-ssh-cli delete <id>
 remote-ssh-cli import <csv-file> [--dry-run]   # 批量导入主机
+remote-ssh-cli monitor  # 实时监控连接池（按 q 退出）
 ```
 
 ### CSV 批量导入
@@ -133,6 +138,47 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
 - CSV 模板（表头 + 示例行）会打印在 `remote-ssh-cli` 的 TUI 横幅里；`remote-ssh-cli import` 不带文件参数时也会打印同样的内容。
 
 > **Windows 注意**：如果遇到 `JScript 编译错误 (800A03EA)`，请确保 npm 版本 >= 10.8.0，或直接在 **cmd.exe** 中运行（而非 PowerShell），因为 npm 生成的 `.ps1` 包装脚本在旧版本中可能不会显式调用 `node`。本包已为入口文件添加 `#!/usr/bin/env node` shebang。
+
+### 监控连接池
+
+`remote-ssh-cli monitor` 会打开一个连接池的实时视图：屏幕**每秒刷新一次**，
+按 **`q`** 键退出（Ctrl+C 同样有效）：
+
+```text
+SSH connection pool monitor · 15:05:31 · tick 42 · refresh 1000ms · last tick 41ms
+pool 2/32 connections · idle timeout 1m00s · probe timeout 5s · press q to quit
+
+HOST          ADDRESS       USER   STATUS    LATENCY  LAST OK  POOL
+------------  ------------  -----  --------  -------  -------  ----
+web-01        192.168.1.100 root   up        12ms     15:05:30 1m05s
+db-01         10.0.0.5:2222 deploy down      8ms      -        -
+
+problems (1):
+  db-01 (10.0.0.5:2222): connect ECONNREFUSED 10.0.0.5:2222
+```
+
+| 列 | 含义 |
+|---|---|
+| `STATUS` | `up`（探测成功）、`down`（连接失败）、`disabled`（主机已停用 —— 只列出，不探测） |
+| `LATENCY` | 最近一次探测的端到端耗时 |
+| `LAST OK` | 最近一次探测成功的时间 |
+| `POOL` | 池中连接的存活时长 —— 即这条会话被复用了多久而没有重建 |
+
+- 监控会把连接池**保温**：每台主机都通过 SSH 工具使用的同一个 `ConnectionPool` 探测，展示的是真实可复用的会话。
+- CLI 进程使用**自己的**连接池 —— MCP 服务器是另一个进程，它的连接无法从终端里查看。
+- 默认探测命令是 `echo`（POSIX shell 与 `cmd.exe` 都有）；每个刷新周期每台主机探测一次，主机较多时请把 `--interval` 调大。
+- 没有终端时（管道、CI 任务）监控只输出一帧就退出 —— 否则没有按键可以结束它。
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `--interval <ms>` | 刷新间隔（毫秒） | `1000` |
+| `--timeout <s>` | 单台主机的探测超时（1-600 秒） | `5` |
+| `--probe-cmd <cmd>` | 探测用的命令 | `echo` |
+| `--host <host_id>` | 只监控指定主机（可重复） | 全部主机 |
+| `--all` | 同时列出已停用的主机（不探测） | 关闭 |
+| `--once` | 只输出一帧后退出 | 关闭 |
+
+交互式 TUI 里也有同样的视图（菜单项 `7) Monitor connection pool`）。
 
 ### 在 Claude Desktop 中注册
 
@@ -183,6 +229,35 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
 - 连接池按「主机 id + 凭据指纹」管理：密码 / 私钥 / 地址 / 端口 / 用户名任一项变化，缓存的连接立刻作废，下次命令重新建连；`host_update` / `host_delete` 也会主动丢弃对应连接。
 - 空闲连接在 `MCP_SSH_POOL_IDLE_MS` 之后关闭；被对端断开的连接会在下次使用时自动重连（最多重试一次）。
 - 进程退出（MCP 客户端断开）时会关闭全部池化连接。
+- `remote-ssh-cli monitor` 可以实时查看连接池（见 [监控连接池](#监控连接池)），它同样遵循上面两个环境变量。
+
+### 在 MCP 里监控连接池
+
+`pool_status` 以表格形式展示 **MCP 服务器自己** 的连接池：每台有连接或有命令流量的主机一行。
+
+```text
+SSH connection pool · 1/32 connections · idle timeout 1m00s · 2 commands executed · 1 failed · updated 15:24:16
+Commands and error messages are desensitized (secrets masked, IP addresses replaced).
+
+UID                                   SYS_NAME  STATE   EXECUTED  FAILED  LAST CMD                 LAST RESULT  LAST ERROR                     LAST RUN  POOL AGE
+------------------------------------  --------  ------  --------  ------  -----------------------  -----------  -----------------------------  --------  --------
+9bcb7682-537b-4837-8b9e-6e37b4c61cdc  web-01    pooled  3         1       systemctl restart nginx  exit=1       connect to *** port 22 failed  12s ago   1m05s
+```
+
+| 列 | 含义 |
+|---|---|
+| `UID` | 主机 id，即 `host_list` 返回的 `uid` |
+| `SYS_NAME` | 主机名 |
+| `STATE` | `pooled`（连接在线且空闲）、`busy`（正在执行命令）、`down`（连接已断开）、`idle`（跑过命令但当前无连接）、`new`（从未使用） |
+| `EXECUTED` / `FAILED` | 该主机上执行过的命令数，以及其中失败的数量 |
+| `LAST CMD` / `LAST RESULT` | 最后一条命令及其结果（`ok`、`exit=1`、`timeout`、`error`） |
+| `LAST ERROR` | 最后一次失败经过脱敏的错误信息 |
+| `LAST RUN` | 距上次执行命令过去多久 |
+| `POOL AGE` | 当前连接已复用了多久 |
+
+- 表格是**脱敏**的：凭据会被遮蔽（`mysql -pS3cret` → `mysql -p***`），IP 地址会被替换（`10.0.0.5` → `***`），主机的地址 / 端口 / 用户名 / 凭据一律不出现。
+- `format: "json"` 返回同样内容的 JSON；`include_history: true` 追加每台主机最近执行过的命令；`include_idle_hosts: true` 连没有流量的主机也列出来；`host_id` 只看某台主机。
+- 计数器保存在 MCP 服务器进程里，描述的是**这个**服务器跑过的命令，重启即清零；CLI 监控是另一个进程，看的是它自己的连接池。
 
 ### 超时语义
 
@@ -210,17 +285,19 @@ npm test      # smoke tests
 
 ### Smoke 测试
 
-`npm test` 依次跑三个脚本（都不依赖真实 SSH 服务器）：
+`npm test` 依次跑四个脚本（都不依赖真实 SSH 服务器）：
 
 - `test/smoke.mjs`：加密 + 解密往返（crypto.ts）、HostStore CRUD 完整路径（含加密落盘 / 读取 / 列表 / 更新 / 删除）、parsePlaybook 对结构化与旧式两种格式的解析。
-- `test/features_smoke.mjs`：CSV 解析与主机行映射、批量导入（含 dry-run 与重复 IP 跳过）、连接池的复用 / 凭据变更作废 / 空闲回收、playbook 解析的边界情况。
-- `test/mcp_smoke.mjs`：以子进程拉起 MCP 服务器，走一遍 JSON-RPC 握手，校验 8 个工具都被正确注册、`host_get` 未对外暴露、`host_list` 只暴露 `sys_name` 与 `uid`、密码不会出现在任何响应里。
+- `test/features_smoke.mjs`：CSV 解析与主机行映射、批量导入（含 dry-run 与重复 IP 跳过）、连接池的复用 / 凭据变更作废 / 空闲回收、playbook 解析的边界情况、命令与错误信息的脱敏、`pool_status` 表格。
+- `test/monitor_smoke.mjs`：连接池监控 —— 帧渲染、每秒刷新循环、`q` 快捷键退出、SSH 探测（用假客户端）与连接池快照。
+- `test/mcp_smoke.mjs`：以子进程拉起 MCP 服务器，走一遍 JSON-RPC 握手，校验 9 个工具都被正确注册、`host_get` 未对外暴露、`host_list` 只暴露 `sys_name` 与 `uid`、`pool_status` 返回脱敏表格、密码不会出现在任何响应里。
 
 运行单个文件：
 
 ```bash
 node test/smoke.mjs
 node test/features_smoke.mjs
+node test/monitor_smoke.mjs
 node test/mcp_smoke.mjs
 ```
 

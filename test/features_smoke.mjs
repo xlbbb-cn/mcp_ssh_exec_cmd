@@ -4,6 +4,8 @@
  *   - bulk import against a HostStore       (src/importer.ts)
  *   - credential fingerprinting for the pool (src/pool.ts)
  *   - playbook parser edge cases            (src/ssh.ts)
+ *   - command statistics + the pool_status tool (src/pool.ts, src/tools/pool_status.ts)
+ *   - the redaction of commands and errors  (src/redact.ts)
  *
  * Run with `npm test`.  State is isolated in a temp MCP_SSH_CONFIG_DIR,
  * the user's real hosts.json is never touched.
@@ -286,6 +288,173 @@ echo done
   if (blank[1].command !== "echo done") {
     throw new Error(`blank[1]=${JSON.stringify(blank[1])}`);
   }
+});
+
+// ── 6. redaction ───────────────────────────────────────────────────────────
+
+test("redact: secrets and addresses are masked, ordinary text is kept", async () => {
+    const { redactCommand, redactText } = await import("../dist/redact.js");
+
+    const cases = [
+        ["mysql -h 10.0.0.5 -u root -pS3cret -e 'select 1'", ["S3cret", "10.0.0.5"]],
+        ["mysql --password=hunter2 -u root", ["hunter2"]],
+        ["PASSWORD=hunter2 psql -h db", ["hunter2"]],
+        ["curl -H 'Authorization: Bearer abcdef123456' https://x", ["abcdef123456"]],
+        ["psql postgres://user:hunter2@db:5432/x", ["hunter2"]],
+        ["connect ECONNREFUSED 192.168.1.100:2222", ["192.168.1.100"]],
+        ["openssl s_client -connect 2001:db8::1:443", ["2001:db8::1"]],
+    ];
+    for (const [input, secrets] of cases) {
+        const out = redactCommand(input, 200);
+        for (const secret of secrets) {
+            if (out.includes(secret)) {
+                throw new Error(`'${secret}' leaked: ${out}`);
+            }
+        }
+        if (!out.includes("***")) {
+            throw new Error(`nothing was masked: ${out}`);
+        }
+    }
+
+    // Harmless commands stay readable.
+    for (const keep of [
+        "systemctl restart nginx",
+        "date +%H:%M:%S",
+        "tar -p -cf backup.tar /etc",
+        "curl -k https://insecure.example.com",
+    ]) {
+        if (redactCommand(keep, 200) !== keep) {
+            throw new Error(`'${keep}' was modified: ${redactCommand(keep, 200)}`);
+        }
+    }
+
+    // The text is compacted into a single line so it fits a table cell.
+    if (redactText("  a\n  b  ") !== "a b") {
+        throw new Error(`compact failed: ${JSON.stringify(redactText("  a\n  b  "))}`);
+    }
+});
+
+// ── 7. pool monitoring ─────────────────────────────────────────────────────
+
+test("pool: commands are counted and the pool_status table is desensitized", async () => {
+    const { ConnectionPool } = await import("../dist/pool.js");
+    const { runCommand } = await import("../dist/ssh.js");
+    const { buildPoolTools } = await import("../dist/tools/pool_status.js");
+    const { HostStore } = await import("../dist/storage.js");
+    const { EventEmitter } = await import("node:events");
+
+    const dir = mkdtempSync(join(tmpdir(), "mcp-ssh-poolstatus-"));
+    process.env.MCP_SSH_CONFIG_DIR = dir;
+    const store = new HostStore(randomBytes(32));
+    const host = await store.create({
+        ip_address: "10.0.0.5",
+        system_name: "web-01",
+        ssh_username: "root",
+        ssh_auth_method: "password",
+        ssh_password: "s3cret",
+    });
+
+    // A fake ssh2 client that answers with the given exit code.
+    const makeClient = (exitCode, stderr = "") => {
+        const client = new EventEmitter();
+        client.end = () => {};
+        client.exec = (_cmd, _opts, cb) => {
+            const stream = new EventEmitter();
+            stream.stderr = new EventEmitter();
+            stream.close = () => {};
+            cb(null, stream);
+            setImmediate(() => {
+                if (stderr) stream.stderr.emit("data", Buffer.from(stderr));
+                stream.emit("close", exitCode);
+            });
+        };
+        return client;
+    };
+
+    const pool = new ConnectionPool({
+        idleMs: 60_000,
+        maxHosts: 4,
+        connect: async () => makeClient(1, "connect to 10.0.0.5 port 22 failed\n"),
+    });
+
+    const creds = await store.getCredsById(host.id);
+    await runCommand(creds, "ssh root@10.0.0.5 uptime", {
+        pool,
+        timeoutSeconds: 5,
+    });
+    await runCommand(creds, "uptime", { pool, timeoutSeconds: 5 });
+
+    // Both commands are counted, the failing one is counted as failed.
+    const stats = pool.commandStatsFor(host.id);
+    if (!stats) throw new Error("no statistics were recorded");
+    if (stats.executed !== 2) throw new Error(`executed=${stats.executed}, want 2`);
+    if (stats.failed !== 2) throw new Error(`failed=${stats.failed}, want 2`);
+    if (stats.lastCommand.command !== "uptime") {
+        throw new Error(`lastCommand=${stats.lastCommand.command}`);
+    }
+
+    const [tool] = buildPoolTools(store, pool);
+    if (tool.name !== "pool_status") throw new Error(`name=${tool.name}`);
+
+    const res = await tool.handler({ include_history: true });
+    const text = res.content[0].text;
+    if (!text.includes(host.id)) throw new Error(`uid missing:\n${text}`);
+    if (!text.includes("web-01")) throw new Error(`sys_name missing:\n${text}`);
+    if (!text.includes("EXECUTED") || !text.includes("FAILED")) {
+        throw new Error(`columns missing:\n${text}`);
+    }
+    // Desensitized: neither the password, the address nor the user
+    // name may show up — not even in the command history.
+    if (text.includes("s3cret")) throw new Error(`password leaked:\n${text}`);
+    if (text.includes("10.0.0.5")) throw new Error(`address leaked:\n${text}`);
+    if (text.includes("root")) throw new Error(`user name leaked:\n${text}`);
+    if (!text.includes("ssh ***@*** uptime")) {
+        throw new Error(`the command was not masked:\n${text}`);
+    }
+    // The JSON variant carries the same information.
+    const jsonRes = await tool.handler({ format: "json" });
+    const payload = JSON.parse(jsonRes.content[0].text);
+    if (payload.totals.executed !== 2) {
+        throw new Error(`totals=${JSON.stringify(payload.totals)}`);
+    }
+    if (payload.hosts[0].uid !== host.id) {
+        throw new Error(`uid=${payload.hosts[0].uid}`);
+    }
+    if (JSON.stringify(payload).includes("s3cret")) {
+        throw new Error("password leaked into the JSON output");
+    }
+
+    // An unknown host id is reported like everywhere else.
+    let failed = false;
+    try {
+        await tool.handler({ host_id: "not-a-real-uid" });
+    } catch (err) {
+        failed = true;
+        if (!err.message.includes("host_list")) throw err;
+    }
+    if (!failed) throw new Error("an unknown host id was accepted");
+
+    pool.closeAll();
+    rmSync(dir, { recursive: true, force: true });
+});
+
+test("pool: deleting a host drops its statistics", async () => {
+    const { ConnectionPool } = await import("../dist/pool.js");
+
+    const pool = new ConnectionPool({ idleMs: 60_000, maxHosts: 4 });
+    pool.recordCommand("h1", {
+        command: "uptime",
+        success: true,
+        exitCode: 0,
+        error: null,
+        durationMs: 5,
+    });
+    if (!pool.commandStatsFor("h1")) throw new Error("the command was not recorded");
+    pool.forget("h1");
+    if (pool.commandStatsFor("h1")) {
+        throw new Error("the statistics survived the host");
+    }
+    pool.closeAll();
 });
 
 // ── runner ────────────────────────────────────────────────────────────────

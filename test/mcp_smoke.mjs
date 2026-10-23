@@ -1,7 +1,7 @@
 /**
  * End-to-end smoke test that spawns the MCP server as a child
  * process, performs the JSON-RPC handshake over stdio, and
- * verifies that all 8 tools are advertised correctly.
+ * verifies that all 9 tools are advertised correctly.
  *
  * Run with:  node test/mcp_smoke.mjs
  *
@@ -31,6 +31,7 @@ const expected = new Set([
     "ssh_run_command",
     "ssh_run_interactive",
     "ssh_run_playbook",
+    "pool_status",
 ]);
 
 const stderrLines = [];
@@ -225,7 +226,31 @@ try {
         console.log(`  ✓ ssh_run_command: connected & ran (live sshd on 127.0.0.1:22)`);
     }
 
-    // 10) clean up
+    // 10) the pool monitor answers with a desensitized table
+    const poolId = send("tools/call", {
+        name: "pool_status",
+        arguments: { include_idle_hosts: true },
+    });
+    const poolRes = await ok(poolId);
+    if (poolRes.isError) {
+        throw new Error(`pool_status failed: ${JSON.stringify(poolRes)}`);
+    }
+    const poolText = poolRes.content[0].text;
+    if (!poolText.includes("UID") || !poolText.includes("SYS_NAME")) {
+        throw new Error(`pool_status did not render a table:\n${poolText}`);
+    }
+    if (!poolText.includes(created.host.id)) {
+        throw new Error(`pool_status did not list the host:\n${poolText}`);
+    }
+    if (poolText.includes("sup3r-secret")) {
+        throw new Error("pool_status leaked the password!");
+    }
+    if (poolText.includes("127.0.0.1")) {
+        throw new Error("pool_status leaked the address!");
+    }
+    console.log("  ✓ pool_status: desensitized pool table");
+
+    // 11) clean up
     const delId = send("tools/call", {
         name: "host_delete",
         arguments: { host_id: created.host.id },

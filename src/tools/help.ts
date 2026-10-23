@@ -88,6 +88,20 @@ const CLI_HELP_TEXT = [
     "`ssh_auth_method`\uff08password/pubkey\uff09\u3001`ssh_password`\u3001`ssh_private_key`\u3001",
     "`ssh_private_key_path`\u3001`ssh_private_key_passphrase`\u3001`is_enable`\u3002",
     "",
+    "### \u76d1\u63a7\u8fde\u63a5\u6c60",
+    "",
+    "\`remote-ssh-cli monitor\` \u6bcf\u79d2\u5237\u65b0\u4e00\u6b21\u8fde\u63a5\u6c60\u72b6\u6001\uff0c\u6309 \`q\` \u9000\u51fa\u3002",
+    "",
+    "\`\`\`bash",
+    "remote-ssh-cli monitor",
+    "remote-ssh-cli monitor --interval 500 --timeout 3",
+    "remote-ssh-cli monitor --host <host_id> --once",
+    "\`\`\`",
+    "",
+    "\u53ef\u9009\u53c2\u6570\uff1a`--interval`\uff08\u5237\u65b0\u95f4\u9694\uff0c\u6beb\u79d2\uff0c\u9ed8\u8ba4 1000\uff09\u3001`--timeout`\uff08\u63a2\u6d4b\u8d85\u65f6\uff0c\u79d2\uff09\u3001",
+    "`--probe-cmd`\uff08\u63a2\u6d4b\u547d\u4ee4\uff0c\u9ed8\u8ba4 echo\uff09\u3001`--host`\uff08\u53ea\u76d1\u63a7\u6307\u5b9a\u4e3b\u673a\uff09\u3001`--all`\uff08\u5305\u542b\u5df2\u7981\u7528\u4e3b\u673a\uff09\u3001",
+    "`--once`\uff08\u53ea\u8f93\u51fa\u4e00\u5e27\u540e\u9000\u51fa\uff09\u3002",
+    "",
     "## Windows \u6545\u969c\u6392\u9664",
     "",
     "\u5982\u679c\u9047\u5230 `JScript \u7f16\u8bd1\u9519\u8bef (800A03EA)`\uff0c\u8bf7\u4f7f\u7528 **cmd.exe** \u8fd0\u884c `remote-ssh-cli` \u547d\u4ee4\uff0c",
@@ -103,7 +117,7 @@ const helpSchema = {
         .optional()
         .describe(
             "Optional topic to filter help: 'install', 'list', 'get', 'create', " +
-            "'update', 'delete', 'import', 'tui', or 'windows' for troubleshooting. " +
+            "'update', 'delete', 'import', 'monitor', 'tui', or 'windows' for troubleshooting. " +
             "Omit to get the full help text.",
         ),
 };
@@ -190,6 +204,21 @@ function buildTopicText(topic: string): string {
             "",
             "\u5355\u884c\u9519\u8bef\u4e0d\u4f1a\u4e2d\u65ad\u6574\u4e2a\u5bfc\u5165\uff1a\u6bcf\u884c\u4f1a\u88ab\u62a5\u544a\u4e3a created / skipped / failed\u3002",
         ],
+        monitor: [
+            "### \u76d1\u63a7\u8fde\u63a5\u6c60",
+            "",
+            "\`\`\`bash",
+            "remote-ssh-cli monitor",
+            "remote-ssh-cli monitor --interval 500 --timeout 3",
+            "remote-ssh-cli monitor --host <host_id> --once",
+            "\`\`\`",
+            "",
+            "\u6bcf\u79d2\u5237\u65b0\u4e00\u5e27\u8fde\u63a5\u6c60\u72b6\u6001\uff08\u8fde\u63a5\u72b6\u6001\u3001\u5ef6\u8fdf\u3001\u6c60\u6d3b\u8dc3\u65f6\u957f\uff09\uff0c\u6309 \`q\` \u9000\u51fa\u3002",
+            "",
+            "\u53ef\u9009\u53c2\u6570\uff1a`--interval`\uff08\u5237\u65b0\u95f4\u9694\uff0c\u6beb\u79d2\uff0c\u9ed8\u8ba4 1000\uff09\u3001`--timeout`\uff08\u63a2\u6d4b\u8d85\u65f6\uff0c\u79d2\uff09\u3001",
+            "`--probe-cmd`\uff08\u63a2\u6d4b\u547d\u4ee4\uff0c\u9ed8\u8ba4 echo\uff09\u3001`--host`\uff08\u53ea\u76d1\u63a7\u6307\u5b9a\u4e3b\u673a\uff09\u3001`--all`\uff08\u5305\u542b\u5df2\u7981\u7528\u4e3b\u673a\uff09\u3001",
+            "`--once`\uff08\u53ea\u8f93\u51fa\u4e00\u5e27\u540e\u9000\u51fa\uff09\u3002",
+        ],
         tui: [
             "### \u4ea4\u4e92\u5f0f TUI",
             "",
@@ -209,7 +238,7 @@ function buildTopicText(topic: string): string {
     return (lines[topic] ?? ["Unknown topic"]).join("\n");
 }
 
-const TOPIC_KEYS = ["install", "list", "get", "create", "update", "delete", "import", "tui", "windows"];
+const TOPIC_KEYS = ["install", "list", "get", "create", "update", "delete", "import", "monitor", "tui", "windows"];
 
 export function buildHelpTool(): McpTool[] {
     return [

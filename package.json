@@ -18,7 +18,7 @@
         "build": "tsc -p tsconfig.json",
         "start": "node dist/index.js",
         "dev": "tsc -p tsconfig.json --watch",
-        "test": "node test/smoke.mjs && node test/features_smoke.mjs && node test/mcp_smoke.mjs",
+        "test": "node test/smoke.mjs && node test/features_smoke.mjs && node test/monitor_smoke.mjs && node test/mcp_smoke.mjs",
         "tui": "node dist/cli.js",
         "verify:published": "node test/verify_published.mjs",
         "prepublishOnly": "npm run build"

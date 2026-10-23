@@ -20,6 +20,10 @@
  *   - ``exec`` failures on a pooled connection are retried once with a
  *     new connection, because a pooled socket may have been closed by
  *     the peer while it sat idle.
+ *   - Every command that runs is counted, so the pool can report which
+ *     hosts saw how much traffic and how many commands failed.  The
+ *     counters live next to the connections and survive an idle
+ *     eviction — they are what the ``pool_status`` MCP tool renders.
  *
  * Pooling can be turned off entirely by setting ``MCP_SSH_POOL_IDLE_MS=0``,
  * in which case every acquire returns a throw-away connection.
@@ -30,6 +34,15 @@ import type { HostCreds } from "./types.js";
 
 const DEFAULT_IDLE_MS = 60_000;
 const DEFAULT_MAX_HOSTS = 32;
+
+/** How many commands are remembered per host. */
+const MAX_COMMAND_HISTORY = 10;
+
+/** Upper bound for a stored command line (characters). */
+const MAX_STORED_COMMAND = 2000;
+
+/** Upper bound for a stored error message (characters). */
+const MAX_STORED_ERROR = 500;
 
 /** Raised when an SSH connection cannot be established. */
 export class SshConnectionError extends Error {
@@ -165,6 +178,46 @@ export interface PoolEntryInfo {
     broken: boolean;
 }
 
+/**
+ * One command that ran against a host.
+ *
+ * The command line is stored verbatim — it is needed to tell *what*
+ * was executed — but the monitoring tool redacts it before it leaves
+ * the server (see ``src/redact.ts``).
+ */
+export interface PoolCommandRecord {
+    /** The command line exactly as it was sent. */
+    command: string;
+    /** True when the command finished with exit code 0. */
+    success: boolean;
+    /** Exit code, `null` when the command never produced one. */
+    exitCode: number | null;
+    /** Failure reason (stderr excerpt or transport error). */
+    error: string | null;
+    /** How long the command took, in ms. */
+    durationMs: number;
+    /** When the command finished (epoch ms). */
+    at: number;
+}
+
+/** Aggregated command statistics of one host. */
+export interface HostCommandStats {
+    /** The host the commands were executed on. */
+    hostId: string;
+    /** Number of commands executed (successful + failed). */
+    executed: number;
+    /** Number of commands that succeeded. */
+    succeeded: number;
+    /** Number of commands that failed. */
+    failed: number;
+    /** The most recent command. */
+    lastCommand: PoolCommandRecord | null;
+    /** Timestamp of the most recent command. */
+    lastRunAt: number | null;
+    /** The most recent commands, oldest first (bounded). */
+    history: PoolCommandRecord[];
+}
+
 /** A borrowed connection.  Call ``release()`` when the operation is done. */
 export interface PoolLease {
     client: Client;
@@ -178,6 +231,13 @@ export class ConnectionPool {
         creds: HostCreds,
         timeoutSeconds: number,
     ) => Promise<Client>;
+    /**
+     * Command statistics per host.  They are kept *outside* of
+     * ``entries`` on purpose: a pooled connection is dropped as soon as
+     * it goes idle or breaks, but the traffic history has to survive
+     * that — it is what the monitoring tool reports.
+     */
+    private readonly stats = new Map<string, HostCommandStats>();
 
     constructor(options?: ConnectionPoolOptions) {
         const defaults = loadPoolConfig();
@@ -284,6 +344,80 @@ export class ConnectionPool {
     /** Drop the pooled connection for a host (credentials changed / host deleted). */
     invalidate(hostId: string): void {
         this.drop(hostId);
+    }
+
+    /**
+     * Forget a host completely: the pooled connection *and* its command
+     * statistics.  Used when a host is deleted.
+     */
+    forget(hostId: string): void {
+        this.drop(hostId);
+        this.stats.delete(hostId);
+    }
+
+    /**
+     * Record a command that ran against a host.  Every successful and
+     * failed command goes through here, so the counters describe the
+     * traffic of the whole process — not only of the still-open
+     * connections.
+     */
+    recordCommand(
+        hostId: string,
+        record: Omit<PoolCommandRecord, "at">,
+    ): void {
+        let stats = this.stats.get(hostId);
+        if (!stats) {
+            stats = {
+                hostId,
+                executed: 0,
+                succeeded: 0,
+                failed: 0,
+                lastCommand: null,
+                lastRunAt: null,
+                history: [],
+            };
+            this.stats.set(hostId, stats);
+        }
+        const entry: PoolCommandRecord = {
+            command: (record.command ?? "").slice(0, MAX_STORED_COMMAND),
+            success: record.success,
+            exitCode: record.exitCode ?? null,
+            error: record.error
+                ? record.error.slice(0, MAX_STORED_ERROR)
+                : null,
+            durationMs: record.durationMs,
+            at: Date.now(),
+        };
+        stats.executed += 1;
+        if (entry.success) {
+            stats.succeeded += 1;
+        } else {
+            stats.failed += 1;
+        }
+        stats.lastCommand = entry;
+        stats.lastRunAt = entry.at;
+        stats.history.push(entry);
+        if (stats.history.length > MAX_COMMAND_HISTORY) {
+            stats.history.shift();
+        }
+    }
+
+    /**
+     * Snapshot of the command statistics of every host that ran
+     * something.
+     */
+    commandStatsSnapshot(): HostCommandStats[] {
+        return [...this.stats.values()].map((stats) => ({
+            ...stats,
+            history: [...stats.history],
+        }));
+    }
+
+    /** Command statistics of a single host (if it ran anything). */
+    commandStatsFor(hostId: string): HostCommandStats | undefined {
+        const stats = this.stats.get(hostId);
+        if (!stats) return undefined;
+        return { ...stats, history: [...stats.history] };
     }
 
     /** Close every pooled connection. */

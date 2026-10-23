@@ -113,6 +113,143 @@ async function runImport(store: HostStore, file: string, dryRun: boolean): Promi
   return 0;
 }
 
+/** Options of the `monitor` subcommand. */
+interface MonitorOptions {
+  /** Redraw interval in ms. */
+  intervalMs: number;
+  /** Per-host probe timeout in seconds. */
+  timeoutSeconds: number;
+  /** Command executed on the remote host to probe it. */
+  probeCommand: string;
+  /** Restrict the monitor to these host ids. */
+  hostIds: string[];
+  /** Also show disabled hosts (they are never probed). */
+  includeDisabled: boolean;
+  /** Render a single frame and exit. */
+  once: boolean;
+}
+
+/** Default options of the interactive monitor (one frame per second). */
+function defaultMonitorOptions(): MonitorOptions {
+  return {
+    intervalMs: DEFAULT_INTERVAL_MS,
+    timeoutSeconds: DEFAULT_PROBE_TIMEOUT_S,
+    probeCommand: DEFAULT_PROBE_COMMAND,
+    hostIds: [],
+    includeDisabled: false,
+    once: false,
+  };
+}
+
+/** Parse the flags of the `monitor` subcommand. */
+function parseMonitorArgs(args: string[]): MonitorOptions {
+  const options = defaultMonitorOptions();
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    const next = (): string => {
+      const value = args[i + 1];
+      if (value === undefined) {
+        throw new Error(`${arg} requires a value`);
+      }
+      i += 1;
+      return value;
+    };
+    switch (arg) {
+      case "--interval": {
+        const value = Number(next());
+        if (!Number.isFinite(value) || value < 50) {
+          throw new Error("--interval must be a number of milliseconds >= 50");
+        }
+        options.intervalMs = Math.floor(value);
+        break;
+      }
+      case "--timeout": {
+        const value = Number(next());
+        if (!Number.isFinite(value) || value < 1 || value > 600) {
+          throw new Error("--timeout must be between 1 and 600 seconds");
+        }
+        options.timeoutSeconds = Math.floor(value);
+        break;
+      }
+      case "--probe-cmd":
+        options.probeCommand = next();
+        break;
+      case "--host":
+        options.hostIds.push(next());
+        break;
+      case "--all":
+        options.includeDisabled = true;
+        break;
+      case "--once":
+        options.once = true;
+        break;
+      default:
+        throw new Error(`unknown monitor option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+/**
+ * Monitor the SSH connection pool.
+ *
+ * The CLI runs its own pool — the MCP server is a separate process, so
+ * its connections cannot be inspected from here.  Every enabled host is
+ * probed once per interval; the frame is redrawn until the user presses
+ * `q`.
+ */
+async function runMonitor(
+  store: HostStore,
+  options: MonitorOptions,
+): Promise<number> {
+  let hosts = await store.listPublic();
+
+  if (options.hostIds.length > 0) {
+    const known = new Set(hosts.map((h) => h.id));
+    const missing = options.hostIds.filter((id) => !known.has(id));
+    if (missing.length > 0) {
+      console.error(`unknown host id(s): ${missing.join(", ")}`);
+    }
+    hosts = hosts.filter((h) => options.hostIds.includes(h.id));
+    if (hosts.length === 0) {
+      console.error("nothing to monitor");
+      return 1;
+    }
+  }
+
+  if (!options.includeDisabled) {
+    hosts = hosts.filter((h) => h.is_enable);
+  }
+
+  const pool = new ConnectionPool();
+  const probe = createSshProbe({
+    getCreds: (id) => store.getCredsById(id),
+    pool,
+    timeoutSeconds: options.timeoutSeconds,
+    command: options.probeCommand,
+  });
+
+  try {
+    return await runPoolMonitor({
+      hosts: hosts.map((h) => ({
+        id: h.id,
+        system_name: h.system_name,
+        ip_address: h.ip_address,
+        ssh_port: h.ssh_port,
+        ssh_username: h.ssh_username,
+        is_enable: h.is_enable,
+      })),
+      probe,
+      intervalMs: options.intervalMs,
+      probeTimeoutSeconds: options.timeoutSeconds,
+      pool,
+      once: options.once,
+    });
+  } finally {
+    pool.closeAll();
+  }
+}
+
 async function main() {
   const master = await loadMasterKey();
   const store = new HostStore(master);
@@ -120,7 +257,9 @@ async function main() {
 
   if (args.length === 0) {
     // ── interactive TUI ──
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const makeInterface = () =>
+      readline.createInterface({ input: process.stdin, output: process.stdout });
+    let rl = makeInterface();
     const ask = (q: string) => new Promise<string>((res) => rl.question(q, res));
 
     while (true) {
@@ -133,6 +272,7 @@ ${CSV_TEMPLATE_HINT}
 4) Update host
 5) Delete host
 6) Import hosts from CSV
+7) Monitor connection pool
 0) Exit
 Choose: `
       );
@@ -237,6 +377,15 @@ Choose: `
           }
           break;
         }
+        case "7": {
+          // The monitor needs the terminal in raw mode, so the readline
+          // interface is closed first and re-created afterwards.
+          rl.close();
+          const code = await runMonitor(store, defaultMonitorOptions());
+          rl = makeInterface();
+          if (code !== 0) console.log(`Monitor exited with code ${code}.`);
+          break;
+        }
         case "0":
           rl.close();
           process.exit(0);
@@ -297,8 +446,21 @@ Choose: `
         if (code !== 0) process.exit(code);
         break;
       }
+      case "monitor": {
+        let options: MonitorOptions;
+        try {
+          options = parseMonitorArgs(args.slice(1));
+        } catch (err) {
+          console.error((err as Error).message);
+          console.error(MONITOR_USAGE);
+          process.exit(1);
+        }
+        const code = await runMonitor(store, options);
+        if (code !== 0) process.exit(code);
+        break;
+      }
       default:
-        console.error(`unknown command: ${cmd}\nAvailable: list, get, create, update, delete, import`);
+        console.error(`unknown command: ${cmd}\nAvailable: list, get, create, update, delete, import, monitor`);
         process.exit(1);
     }
   }
