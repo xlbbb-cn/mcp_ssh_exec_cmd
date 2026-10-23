@@ -1,8 +1,8 @@
 name: Publish to GitHub Packages and npmjs
 
 # Publishes the package to two registries:
-#   * GitHub Packages â€” https://npm.pkg.github.com  (GITHUB_TOKEN)
-#   * npmjs.org       â€” https://registry.npmjs.org (NPM_TOKEN secret)
+#   * GitHub Packages â€?https://npm.pkg.github.com  (GITHUB_TOKEN)
+#   * npmjs.org       â€?https://registry.npmjs.org (NPM_TOKEN secret)
 #
 # GitHub Packages uses the built-in GITHUB_TOKEN, so nothing has to be
 # stored in the repository for it. npmjs.org needs a classic npm
@@ -36,12 +36,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://npm.pkg.github.com
           scope: "@xlbbb-cn"
 
@@ -71,12 +71,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
           scope: "@xlbbb-cn"
 
