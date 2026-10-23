@@ -38,6 +38,8 @@ jobs:
         run: |
           npm ls @xlbbb-cn/mcp_ssh_exec_cmd
           npm view @xlbbb-cn/mcp_ssh_exec_cmd version --registry=https://npm.pkg.github.com
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Exercise the published package
         run: node test/verify_published.mjs
