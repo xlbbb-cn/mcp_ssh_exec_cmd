@@ -1,75 +1,125 @@
 # mcp-ssh-server
 
-> 独立的 stdio MCP 服务器，把项目里的「SSH 主机管理」与「SSH 远程命令执行」打包成 MCP 工具。
-> 同时提供交互式 / 命令行 TUI (`remote-ssh-cli`) 用于本地管理 SSH 主机。
+> A standalone **stdio MCP server** that turns *SSH host management* and *remote command execution* into MCP tools.
+> It also ships an interactive / batch CLI (`remote-ssh-cli`) for managing SSH hosts on the local machine.
 >
-> 源代码对应 `app/services/llm_tools.py`（LLM 工具调度器） + `app/utils/ssh_helper.py`（paramiko SSH 客户端） + `app/models/host.py`（主机模型）的等价 Node.js 实现，可被任何支持 MCP 协议的客户端（Claude Desktop、Continue、自研 Agent 等）通过 `npx` 启动调用。
+> 简体中文文档见 [README.zh-CN.md](./README.zh-CN.md)。
 
-## 特性
+This is a Node.js re-implementation of the SSH-host half of a FastAPI project
+(`app/services/llm_tools.py` + `app/utils/ssh_helper.py` + `app/models/host.py`) —
+without the backend, without the database, without a network service. Any MCP
+client (Claude Desktop, Continue, a custom agent, …) can start it with `npx`
+and talk to it over JSON-RPC.
 
-- **完全独立**：自带加密 JSON 存储（`~/.mcp-ssh-server/hosts.json`），不依赖 FastAPI 后端 / 数据库。
-- **零外部依赖**：Node.js 原生 `crypto` 做 AES-256-GCM 加密；纯 JS 的 [`ssh2`](https://github.com/mscdex/ssh2) 做 SSH 客户端，Windows / macOS / Linux 通吃。
-- **stdio MCP**：完全符合 [Model Context Protocol](https://modelcontextprotocol.io/) 的 stdio 传输规范，可被 `npx` 直接拉起。
-- **凭据零外泄**：host 工具的响应永远不返回密码 / 私钥；SSH 工具内部解密后只用于建立连接，响应里也不回显。
+## Highlights
 
-## 工具一览
+- **Fully standalone** — its own encrypted JSON store (`~/.mcp-ssh-server/hosts.json`); no FastAPI backend, no database.
+- **No native dependencies** — Node's built-in `crypto` for AES-256-GCM, pure-JS [`ssh2`](https://github.com/mscdex/ssh2) for SSH; runs on Windows / macOS / Linux.
+- **Standards-compliant stdio MCP** — speaks the [Model Context Protocol](https://modelcontextprotocol.io/) stdio transport and can be launched with `npx`.
+- **Credentials never leave the server** — host tool responses never contain a password or a private key; the SSH tools decrypt them internally to open a connection and never echo them back.
+- **Connection pooling** — one live SSH session per host, reused across commands and playbook steps.
+- **CLI companion** — `remote-ssh-cli` manages the very same store (interactive TUI, batch commands, CSV bulk import).
 
-| 工具 | 说明 |
+## MCP tools
+
+Eight tools are published:
+
+| Tool | Description |
 |---|---|
-| `cli_help` | 返回 `remote-ssh-cli` 的安装 / 用法 / 排障说明（按 topic 分节） |
-| `host_list` | 列出所有主机（**只返回 `sys_name` 与 `uid`**，不含地址 / 用户名 / 凭据；`uid` 即 `host_id`） |
-| `host_create` | 新增一台主机（密码 / 私钥 / 私钥口令会被加密落盘） |
-| `host_update` | 更新主机字段（未提供的凭据字段保持原值） |
-| `host_delete` | 删除主机 |
-| `ssh_run_command` | 在指定主机上执行单条非交互命令 |
-| `ssh_run_interactive` | 在指定主机上执行需要 expect/answer 提示的命令（sudo 等） |
-| `ssh_run_playbook` | 在指定主机上跑多步骤 playbook（结构化 `# @on` / 旧式 `expect:`/`answer:` 都支持） |
+| `cli_help` | Installation / usage / troubleshooting notes for `remote-ssh-cli`, optionally narrowed down with `topic` |
+| `host_list` | List the known hosts — **only `sys_name` and `uid`** (no address, user name or credential); `uid` is the `host_id` every other tool expects |
+| `host_create` | Add a host (password / private key / passphrase are encrypted at rest) |
+| `host_update` | Patch host fields (omitted credential fields keep their current value) |
+| `host_delete` | Delete a host |
+| `ssh_run_command` | Run a single non-interactive command on a host |
+| `ssh_run_interactive` | Run a command that answers prompts (`sudo`, …) through `expect`/`answer` pairs |
+| `ssh_run_playbook` | Run a multi-step playbook (structured `# @…` directives *or* legacy `expect:`/`answer:` lines) |
 
-### 主机标识（口径）
+### The host identifier contract
 
-- `host_list` 是入口：每台主机只返回 `sys_name`（名字）与 `uid`（唯一标识）。
-- 其余所有工具用 `host_id` 指向某台主机，**它的值就是 `host_list` 返回的 `uid`**，原样传回，不要自行拼接或改写。
-- `host_id` 传错时，工具会返回 `Host '<id>' not found. host_id must be the exact 'uid' value returned by host_list ...`，按提示重新 `host_list` 即可。
-- `host_get`（Python 端的 `host_get_login` 安全包装）**不对 MCP 客户端开放**：本服务从设计上就不向 LLM 暴露单台主机的元数据与凭据，LLM 侧只保留 `sys_name` + `uid`。
+- `host_list` is the entry point: every host comes back as exactly two fields — `sys_name` (the name) and `uid` (the unique identifier).
+- Every other tool takes **that same value** under the name `host_id`. Pass it back unchanged; never assemble or guess one.
+- When an id does not resolve, the tool answers with an actionable error:
+  `Host '<id>' not found. host_id must be the exact 'uid' value returned by host_list — call host_list to obtain the valid identifiers.`
+  Call `host_list` again and retry with the value it returns.
+- `host_get` is deliberately **not published to MCP clients**: the model only ever sees `sys_name` + `uid`, never one host's address, user name or credential. The CLI keeps its own `get` subcommand for human operators.
 
-## 快速开始
+### Arguments at a glance
+
+| Tool | Arguments |
+|---|---|
+| `cli_help` | `topic?` — one of `install`, `list`, `get`, `create`, `update`, `delete`, `import`, `tui`, `windows` |
+| `host_list` | `enabled_only?` (bool) |
+| `host_create` | `ip_address` (required), `system_name?`, `ssh_port?` (1-65535, default `22`), `ssh_username?` (default `root`), `ssh_auth_method?` (`password` \| `pubkey`), `ssh_password?`, `ssh_private_key?`, `ssh_private_key_passphrase?`, `is_enable?` (default `true`) |
+| `host_update` | `host_id` (required) plus any of the fields above — an omitted field keeps its current value |
+| `host_delete` | `host_id` |
+| `ssh_run_command` | `host_id`, `command`, `timeout_seconds` (1-600, **required**) |
+| `ssh_run_interactive` | `host_id`, `command`, `expects?` (`[{ expect, answer }]`), `timeout_seconds` |
+| `ssh_run_playbook` | `host_id`, `content` (the multi-line playbook body), `timeout_seconds` |
+
+`ip_address` is unique across the store — creating a duplicate fails.
+
+Command results come back as a plain text block:
+
+```text
+[stdout]
+hello
+[stderr]
+[exit_code=0 success=true duration_ms=42]
+```
+
+## Quick start
 
 ```bash
+git clone <this-repo> mcp-ssh-server
 cd mcp-ssh-server
 npm install
 npm run build
 ```
 
-构建产物在 `dist/`，提供两个 bin 入口：
+The build output lands in `dist/` and provides two binaries:
 
-| 命令 | 入口 | 用途 |
+| Binary | Entry point | Purpose |
 |---|---|---|
-| `remote-ssh-server` | `dist/index.js` | stdio MCP 服务器（被 MCP 客户端启动） |
-| `remote-ssh-cli` | `dist/cli.js` | 交互式 / 命令行主机管理 TUI |
+| `remote-ssh-server` | `dist/index.js` | the stdio MCP server (started by your MCP client) |
+| `remote-ssh-cli` | `dist/cli.js` | interactive / batch host-management CLI |
 
-### 全局安装（CLI 管理工具）
+### Global install (CLI)
 
 ```bash
 npm run build
 npm install -g --allow-scripts=ssh2,cpu-features .
 ```
 
-之后可直接使用 `remote-ssh-cli` 命令管理 SSH 主机：
+Afterwards `remote-ssh-cli` is on your `PATH`:
 
 ```bash
-remote-ssh-cli          # 交互式 TUI
-remote-ssh-cli list     # JSON 列表
-remote-ssh-cli get <id>
+remote-ssh-cli                        # interactive TUI
+remote-ssh-cli list                   # JSON list of every host
+remote-ssh-cli get <host_id>
 remote-ssh-cli create <json-file>
-remote-ssh-cli update <id> <json-file>
-remote-ssh-cli delete <id>
-remote-ssh-cli import <csv-file> [--dry-run]   # 批量导入主机
+remote-ssh-cli update <host_id> <json-file>
+remote-ssh-cli delete <host_id>
+remote-ssh-cli import <csv-file> [--dry-run]
 ```
 
-### CSV 批量导入
+`create` / `update` take a JSON file, e.g.:
 
-`remote-ssh-cli import hosts.csv` 会把 CSV 里的每一行导入成一台主机。
-首行必须是表头，且至少包含 `ip_address` 列：
+```json
+{
+  "ip_address": "192.168.1.100",
+  "system_name": "web-01",
+  "ssh_port": 22,
+  "ssh_username": "root",
+  "ssh_auth_method": "password",
+  "ssh_password": "your-password"
+}
+```
+
+### CSV bulk import
+
+`remote-ssh-cli import hosts.csv` turns every row of the file into one host.
+The first line must be a header row containing at least an `ip_address` column:
 
 ```csv
 ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
@@ -77,30 +127,31 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
 192.168.1.101,db-01,2222,deploy,password,secret
 ```
 
-| 列 | 说明 | 默认值 |
+| Column | Description | Default |
 |---|---|---|
-| `ip_address` | 必填，主机地址，全表唯一 | — |
-| `system_name` | 备注名 | 空 |
-| `ssh_port` | SSH 端口 | `22` |
-| `ssh_username` | SSH 用户名 | `root` |
+| `ip_address` | required, host address, unique across the table | — |
+| `system_name` | display name | empty |
+| `ssh_port` | SSH port | `22` |
+| `ssh_username` | SSH user name | `root` |
 | `ssh_auth_method` | `password` / `pubkey` | `password` |
-| `ssh_password` | 明文密码（落盘前加密） | — |
-| `ssh_private_key` | 明文私钥内容（落盘前加密） | — |
-| `ssh_private_key_path` | 私钥文件路径（与 `ssh_private_key` 二选一） | — |
-| `ssh_private_key_passphrase` | 私钥口令（落盘前加密） | — |
-| `is_enable` | `true/false/1/0/yes/no` | `true` |
+| `ssh_password` | plain-text password (encrypted before it hits the disk) | — |
+| `ssh_private_key` | plain-text private key (encrypted before it hits the disk) | — |
+| `ssh_private_key_path` | path to a key file (alternative to `ssh_private_key`) | — |
+| `ssh_private_key_passphrase` | passphrase protecting the key (encrypted before it hits the disk) | — |
+| `is_enable` | `true`/`false`/`1`/`0`/`yes`/`no` | `true` |
 
-- 字段名大小写不敏感，支持 `ip` / `host` / `name` / `port` / `user` 等别名。
-- 引号内的逗号、换行、`""` 转义都按 RFC 4180 解析，私钥内容不会被拆坏。
-- **单行错误不会中断整批导入**：每行最终会被归类为 created / skipped（IP 重复）/ failed（数据非法），命令以摘要形式打印，失败行数 > 0 时退出码为 1。
-- `--dry-run` 只做校验与报告，不写盘。
-- CSV 模板（表头 + 示例行）会打印在 `remote-ssh-cli` 的 TUI 横幅里；`remote-ssh-cli import` 不带文件参数时也会打印同样的内容。
+- Column names are case-insensitive and accept aliases (`ip`, `host`, `name`, `port`, `user`, `password`, …).
+- Quoted commas, embedded newlines and `""` escapes are parsed per RFC 4180, so private key material is never mangled.
+- **A bad row never aborts the batch**: every row ends up reported as created / skipped (duplicate IP) / failed (invalid data). The command prints a summary and exits with code `1` when at least one row failed.
+- `--dry-run` only validates and reports — nothing is written.
+- The CSV template (header + example row) is printed in the `remote-ssh-cli` banner, and `remote-ssh-cli import` without a file argument prints the same thing.
 
-> **Windows 注意**：如果遇到 `JScript 编译错误 (800A03EA)`，请确保 npm 版本 >= 10.8.0，或直接在 **cmd.exe** 中运行（而非 PowerShell），因为 npm 生成的 `.ps1` 包装脚本在旧版本中可能不会显式调用 `node`。本包已为入口文件添加 `#!/usr/bin/env node` shebang。
+> **Windows note:** if you hit `JScript runtime error (800A03EA)`, make sure npm is >= 10.8.0 or run the command from **cmd.exe** instead of PowerShell — the `.ps1` wrapper npm generates may not invoke `node` explicitly on older npm versions. Both entry points ship a `#!/usr/bin/env node` shebang.
 
-### 在 Claude Desktop 中注册
+### Register it with an MCP client
 
-`~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）或 `%APPDATA%\Claude\claude_desktop_config.json`（Windows）：
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
@@ -113,85 +164,165 @@ ip_address,system_name,ssh_port,ssh_username,ssh_auth_method,ssh_password
 }
 ```
 
-> 仓库内首次使用推荐用 `file:./mcp-ssh-server` 让 npx 直接走本地源码；发布到 npm 后可省略路径：
-> ```json
-> "args": ["-y", "remote-ssh-cmd"]
-> ```
+The `file:` form points `npx` straight at your local checkout — handy while
+developing. Once the package is published to npm the path can be dropped:
 
-## 配置
+```json
+"args": ["-y", "remote-ssh-cmd"]
+```
 
-通过环境变量：
+## Configuration
 
-| 变量 | 说明 | 默认值 |
+Everything is configured through environment variables:
+
+| Variable | Description | Default |
 |---|---|---|
-| `MCP_SSH_MASTER_KEY` | 32 字节的十六进制字符串（64 个 hex 字符）。**设置后必须妥善备份**：换机器 / 换值都会导致现有 `hosts.json` 里的凭据全部无法解密 | 首次启动时自动生成，存到 `<config_dir>/master.key` |
-| `MCP_SSH_CONFIG_DIR` | 配置目录覆盖 | `~/.mcp-ssh-server` |
-| `MCP_SSH_POOL_IDLE_MS` | SSH 连接池中空闲连接的存活时间（毫秒）。`0` 表示完全关闭连接池，每次命令都新建连接 | `60000` |
-| `MCP_SSH_POOL_MAX_HOSTS` | 连接池最多缓存多少台主机（超出时回收最久未用的空闲连接） | `32` |
+| `MCP_SSH_MASTER_KEY` | 32-byte key as a hex string (64 hex characters). **Back this up**: changing it — or moving to another machine — makes every credential in `hosts.json` undecryptable | generated on first start and stored in `<config_dir>/master.key` |
+| `MCP_SSH_CONFIG_DIR` | override the configuration directory | `~/.mcp-ssh-server` |
+| `MCP_SSH_POOL_IDLE_MS` | how long an idle pooled connection is kept (ms). `0` disables pooling entirely, so every command opens a fresh connection | `60000` |
+| `MCP_SSH_POOL_MAX_HOSTS` | how many hosts the pool keeps alive (the least recently used idle connection is evicted beyond this) | `32` |
 
-### SSH 连接池
+### SSH connection pool
 
-- 每台主机只保留 **一条** SSH 连接，同一台主机上的连续命令、playbook 的多个步骤都会复用它。
-- 连接池按「主机 id + 凭据指纹」管理：密码 / 私钥 / 地址 / 端口 / 用户名任一项变化，缓存的连接立刻作废，下次命令重新建连；`host_update` / `host_delete` 也会主动丢弃对应连接。
-- 空闲连接在 `MCP_SSH_POOL_IDLE_MS` 之后关闭；被对端断开的连接会在下次使用时自动重连（最多重试一次）。
-- 进程退出（MCP 客户端断开）时会关闭全部池化连接。
+- Every host keeps **one** SSH connection; consecutive commands and the steps of a playbook reuse it instead of reconnecting.
+- The pool is keyed on the host id **plus a fingerprint of the credentials**. Changing the address, port, user name, auth method, password or key invalidates the cached connection right away; `host_update` and `host_delete` drop it explicitly.
+- Idle connections are closed after `MCP_SSH_POOL_IDLE_MS`. A connection the peer dropped in the meantime is transparently re-established on the next use (one retry).
+- All pooled connections are closed when the process exits (i.e. when the MCP client disconnects).
 
-### 超时语义
+### Timeout semantics
 
-`ssh_run_command` / `ssh_run_interactive` 的 `timeout_seconds` 是**硬上限**：超时后命令会被终止，结果里 `success=false`、`exit_code=null`，并在 `stderr` 里写明超时。`ssh_run_playbook` 的 `timeout_seconds` 是**整个 playbook 的总预算**，每个步骤只能用剩余时间。
+`timeout_seconds` is a **hard cap**: when it expires the command is terminated
+and the result reports `success=false`, `exit_code=null` plus a note in
+`stderr`. For `ssh_run_playbook` the value is the budget for the **whole**
+playbook — every step only gets the time that is left.
 
-## 存储
+## Playbook format
 
-- `hosts.json`：所有主机记录的明文 JSON，明文字段不加密，**`ssh_password` / `ssh_private_key` / `ssh_private_key_passphrase` 字段是加密后的 base64 字符串**。
-- `master.key`：32 字节主密钥（POSIX 上 `0o600` 权限）。
-- 写文件用「先写 `.tmp` 再 rename」的方式，崩溃不会留半文件。
+`ssh_run_playbook` accepts a multi-line body. Two formats are supported.
 
-整个目录应该被加入 `gitignore`：
+**Structured** — directives start with `# @`:
+
+```text
+# @section "Restart nginx"
+# @desc "Reload the reverse proxy after the config change"
+systemctl stop nginx
+# @on "systemctl start nginx"
+expect: [sudo] password for deploy:
+answer: secret
+# @note "the site is back up"
+# @danger "this drops active connections"
+```
+
+| Directive | Meaning |
+|---|---|
+| `# @section "Title"` | group the following steps under a section |
+| `# @desc "…"` | description of the current section |
+| `# @note "…"` | note attached to the current step |
+| `# @danger "…"` | danger warning attached to the current step |
+| `# @on "command"` | run this command interactively (answers the `expect:`/`answer:` pairs that follow) |
+
+**Legacy** — one command per line, optionally followed by `expect:` / `answer:` pairs:
+
+```text
+sudo systemctl restart nginx
+expect: [sudo] password for deploy:
+answer: secret
+```
+
+Ordinary `#` comments are ignored. A playbook stops at the first non-zero exit
+code and returns the transcript of every step that ran.
+
+## Storage & security
+
+- `hosts.json` — all host records as plain JSON. The metadata fields are stored
+  in clear text; **`ssh_password`, `ssh_private_key` and
+  `ssh_private_key_passphrase` hold base64 ciphertext**.
+- `master.key` — the 32-byte master key (mode `0o600` on POSIX).
+- Writes go through a `.tmp` file plus a rename, so a crash never leaves a half-written file behind.
+
+Secrets are encrypted with **AES-256-GCM** using a key derived from the master
+key with **PBKDF2-SHA-256** (200k iterations, 16-byte random salt). The layout
+is `[16-byte salt][12-byte IV][16-byte tag][ciphertext]`; salt and IV are
+fresh for every encryption, so the same plaintext never produces the same
+ciphertext twice.
+
+Keep the whole directory out of version control:
 
 ```gitignore
 # mcp-ssh-server state
 .mcp-ssh-server/
 ```
 
-## 开发
+## Project layout
 
-```bash
-npm run dev   # tsc -w
-npm test      # smoke tests
+```text
+src/
+  index.ts        MCP entry point — stdio transport, tool registration, dispatch
+  cli.ts          remote-ssh-cli — interactive TUI + batch subcommands
+  pool.ts         ConnectionPool — one live SSH connection per host
+  ssh.ts          ssh2 execution primitives + playbook parser/runner
+  storage.ts      HostStore — hosts.json load/save with an atomic full-file rewrite
+  csv.ts          RFC 4180 CSV reader + host-row mapping
+  importer.ts     bulk-import orchestration
+  crypto.ts       AES-256-GCM encryption of secrets at rest
+  master_key.ts   master-key resolution (env var or key file)
+  paths.ts        configuration-directory paths
+  tools/
+    _types.ts     shared MCP tool shape + the host-identifier wording
+    hosts.ts      host_list / host_create / host_update / host_delete
+    ssh_exec.ts   ssh_run_command / ssh_run_interactive / ssh_run_playbook
+    help.ts       cli_help
+test/
+  smoke.mjs         encryption round-trip, HostStore CRUD, playbook parsing
+  features_smoke.mjs  CSV parsing/import, connection pool behaviour
+  mcp_smoke.mjs     end-to-end JSON-RPC handshake against a spawned server
 ```
 
-### Smoke 测试
-
-`npm test` 依次跑三个脚本（都不依赖真实 SSH 服务器）：
-
-- `test/smoke.mjs`：加密 + 解密往返（crypto.ts）、HostStore CRUD 完整路径（含加密落盘 / 读取 / 列表 / 更新 / 删除）、parsePlaybook 对结构化与旧式两种格式的解析。
-- `test/features_smoke.mjs`：CSV 解析与主机行映射、批量导入（含 dry-run 与重复 IP 跳过）、连接池的复用 / 凭据变更作废 / 空闲回收、playbook 解析的边界情况。
-- `test/mcp_smoke.mjs`：以子进程拉起 MCP 服务器，走一遍 JSON-RPC 握手，校验 9 个工具都被正确注册、`host_list` 只暴露 `id` 与 `ip_address`、密码不会出现在任何响应里。
-
-运行单个文件：
+## Development
 
 ```bash
-node test/smoke.mjs
-node test/features_smoke.mjs
-node test/mcp_smoke.mjs
+npm run dev    # tsc --watch
+npm run build  # tsc  (the only typecheck)
+npm test       # all three smoke tests
 ```
 
-## 与 FastAPI 后端的关系
+`npm run build` is the verification step — there is no separate lint or format
+configuration. The tests execute `dist/`, so build before testing.
 
-| 维度 | Python 后端 | 本 MCP |
+### Smoke tests
+
+`npm test` runs three plain Node scripts; none of them needs a real SSH server:
+
+- `test/smoke.mjs` — encrypt/decrypt round-trip, the full HostStore CRUD path (encrypt on write, read back, list, update, delete) and playbook parsing for both formats.
+- `test/features_smoke.mjs` — CSV parsing and host-row mapping, bulk import (including `--dry-run` and duplicate-IP skipping), connection-pool reuse / credential-change invalidation / idle eviction, and playbook parsing edge cases.
+- `test/mcp_smoke.mjs` — spawns the MCP server as a child process, performs the JSON-RPC handshake and asserts that all 8 tools are registered, that `host_list` exposes only `sys_name` + `uid`, that `host_get` is *not* advertised, and that no password ever appears in a response.
+
+Run a single file with `node test/<file>.mjs`. Every test isolates its state in
+a temporary `MCP_SSH_CONFIG_DIR`, so your real `hosts.json` is never touched.
+
+## Relation to the FastAPI backend
+
+| Aspect | Python backend | This MCP server |
 |---|---|---|
-| 数据存储 | PostgreSQL / SQLite（`app.models.host`） | 本地 JSON 文件（`~/.mcp-ssh-server/hosts.json`） |
-| 加密 | Fernet (AES-128-CBC + HMAC) | AES-256-GCM + PBKDF2 |
-| SSH 客户端 | paramiko | ssh2 |
-| 协议 | HTTP REST（`/api/v1/hosts` 等） | MCP (JSON-RPC over stdio) |
-| 鉴权 | RBAC (`host:*` 权限码) | 单用户本地进程（靠文件系统权限保护密钥） |
+| Storage | PostgreSQL / SQLite (`app.models.host`) | local JSON file (`~/.mcp-ssh-server/hosts.json`) |
+| Encryption | Fernet (AES-128-CBC + HMAC) | AES-256-GCM + PBKDF2 |
+| SSH client | paramiko | ssh2 |
+| Protocol | HTTP REST (`/api/v1/hosts`, …) | MCP (JSON-RPC over stdio) |
+| AuthN/AuthZ | RBAC (`host:*` permission codes) | single-user local process, protected by file-system permissions |
 
-> 设计上故意不复用同一份存储 —— 一旦绑了数据库或 API，本 MCP 就不能脱离后端独立运行；反之，复用同一份 JSON 让 MCP 端和后端在数据一致性上会出问题。
+> Sharing one storage backend is deliberately avoided: as soon as a database or
+> an API is involved, this server can no longer run standalone — and pointing
+> both the MCP server and the backend at the same JSON file would create
+> consistency problems.
 >
-> 如需从 FastAPI 后端迁移主机数据，可自行写一个一次性脚本：调用 `/api/v1/hosts` 列表（需要 `host:secure:read`），用同样的字段 shape 调本 MCP 的 `host_create` 即可。
+> To migrate hosts from the FastAPI backend, write a one-off script: list
+> `/api/v1/hosts` (requires `host:secure:read`) and feed the same field shape
+> into this server's `host_create`.
 
-## 已知限制
+## Known limitations
 
-- 主机数据是单文件 JSON，不适合几千条以上的主机规模（读写都全量重写）。
-- 没有并发写保护 —— 同一时刻不要在两个进程里启动本 MCP。
-- 没有审计日志 / 操作回溯；如需审计请把 SSH 输出落到外层 Agent 的对话记录里。
+- The host data lives in a single JSON file that is rewritten in full on every
+  change — fine for hundreds of hosts, not for thousands.
+- There is no concurrent-write protection: do not run two instances against the same `MCP_SSH_CONFIG_DIR` at the same time.
+- There is no audit log or operation trail. If you need one, capture the SSH output in the calling agent's transcript.
+- The MCP surface intentionally exposes no per-host metadata, so a model cannot look up a host's address or user name — it has to go through `host_list` / `host_create`.
