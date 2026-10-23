@@ -436,9 +436,19 @@ a temporary `MCP_SSH_CONFIG_DIR`, so your real `hosts.json` is never touched.
 
 ## Releasing
 
-Releases are published to **npmjs.org** *and* **GitHub Packages** by a GitHub
-Actions workflow (`.github/workflows/publish.yml`). Both jobs build, run the
-smoke tests and publish with npm provenance attached to the tarball.
+Releases are published to **npmjs.org**, **GitHub Packages** and the
+**official MCP Registry** (`registry.modelcontextprotocol.io`) by a GitHub
+Actions workflow (`.github/workflows/publish.yml`). The two package jobs
+build, run the smoke tests and publish with npm provenance attached to the
+tarball; the third job then publishes `server.json` to the MCP Registry,
+which is what directories mirroring the registry (Glama, PulseMCP, …)
+list the server from.
+
+The MCP Registry job runs *after* the npmjs.org job because the registry
+verifies npm ownership by reading the `mcpName` marker out of the published
+package: `mcpName` in `package.json` must always equal `server.json`'s
+`name` (asserted by `test/features_smoke.mjs`), and CI re-syncs the version
+in `server.json` from `package.json` before publishing.
 
 ```bash
 # 1. bump the version in package.json, commit
@@ -454,6 +464,7 @@ git push github v0.1.1
 | GitHub Packages | `GITHUB_TOKEN` | built into the workflow, nothing to configure |
 | npmjs.org | trusted publishing (OIDC) | configured once on npmjs.org: *Packages → `@xlbbb-cn/mcp_ssh_exec_cmd` → Settings → Trusted publisher* → user `xlbbb-cn`, repository `mcp_ssh_exec_cmd`, workflow filename `publish.yml`. **No secret needed** — the workflow exchanges the short-lived GitHub OIDC token for a publish token. |
 | npmjs.org (fallback) | `NPM_TOKEN` | repository secret (*Settings → Secrets and variables → Actions*). Must be a **granular** npm token with *Read and write* on the `@xlbbb-cn` scope and **Bypass 2FA** enabled — a regular user token makes npm answer with `EOTP` (one-time password required). Only needed until the trusted publisher is set up. |
+| MCP Registry | GitHub OIDC | built into the workflow, no secret: the `publish-mcp-registry` job runs `mcp-publisher login github-oidc` and `mcp-publisher publish` after the npmjs.org job. The `mcp-publisher` binary version is pinned in `publish.yml` — bump it deliberately. |
 
 Without either the `NPM_TOKEN` secret or a configured trusted publisher the
 npmjs.org job fails with an actionable error message.

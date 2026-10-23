@@ -10,7 +10,7 @@
  * Run with `npm test`.  State is isolated in a temp MCP_SSH_CONFIG_DIR,
  * the user's real hosts.json is never touched.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -455,6 +455,36 @@ test("pool: deleting a host drops its statistics", async () => {
         throw new Error("the statistics survived the host");
     }
     pool.closeAll();
+});
+
+// ── MCP Registry metadata ─────────────────────────────────────────────────
+
+test("registry: mcpName and server.json stay in sync", async () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const server = JSON.parse(readFileSync(new URL("../server.json", import.meta.url), "utf8"));
+
+  // mcpName is the registry's npm ownership marker: it must exist and
+  // match server.json, or publishing to the official MCP Registry fails.
+  if (!pkg.mcpName) throw new Error("package.json is missing mcpName");
+  if (server.name !== pkg.mcpName) {
+    throw new Error(`server.json name=${server.name} != mcpName=${pkg.mcpName}`);
+  }
+  if (server.version !== pkg.version) {
+    throw new Error(`server.json version=${server.version} != package version=${pkg.version}`);
+  }
+  const entry = server.packages?.[0];
+  if (entry?.registryType !== "npm") throw new Error("packages[0].registryType must be npm");
+  if (entry.identifier !== pkg.name) {
+    throw new Error(`packages[0].identifier=${entry.identifier} != ${pkg.name}`);
+  }
+  if (entry.version !== pkg.version) {
+    throw new Error(`packages[0].version=${entry.version} != package version=${pkg.version}`);
+  }
+  if (entry.transport?.type !== "stdio") throw new Error("packages[0].transport.type must be stdio");
+  // The official registry rejects descriptions longer than 100 characters.
+  if ((server.description?.length ?? 0) > 100) {
+    throw new Error(`server.json description is ${server.description.length} chars, the registry allows 100`);
+  }
 });
 
 // ── runner ────────────────────────────────────────────────────────────────

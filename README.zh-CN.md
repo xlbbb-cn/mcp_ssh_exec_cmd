@@ -304,8 +304,15 @@ node test/mcp_smoke.mjs
 ## 发布
 
 发布由 GitHub Actions 工作流（`.github/workflows/publish.yml`）同时推到
-**npmjs.org** 和 **GitHub Packages**：两个 job 都会构建、跑冒烟测试，并给 tarball
-附上 npm provenance。
+**npmjs.org**、**GitHub Packages** 和 **官方 MCP Registry**
+（`registry.modelcontextprotocol.io`）：两个包 job 会构建、跑冒烟测试，并给 tarball
+附上 npm provenance；第三个 job 随后把 `server.json` 发布到官方 Registry ——
+镜像该 Registry 的目录（Glama、PulseMCP 等）就是从那里收录本服务的。
+
+MCP Registry 的 job 排在 npmjs.org 之后，因为 Registry 会从 npm 上已发布的包里读取
+`mcpName` 标记来校验所有权：`package.json` 的 `mcpName` 必须始终等于 `server.json` 的
+`name`（`test/features_smoke.mjs` 会断言），发布前 CI 也会把 `server.json` 的版本号
+从 `package.json` 同步过去。
 
 ```bash
 # 1. 在 package.json 里改版本号并提交
@@ -321,6 +328,7 @@ git push github v0.1.1
 | GitHub Packages | `GITHUB_TOKEN` | workflow 内置，无需配置 |
 | npmjs.org | trusted publishing（OIDC） | 在 npmjs.org 上配置一次：*Packages → `@xlbbb-cn/mcp_ssh_exec_cmd` → Settings → Trusted publisher* → user `xlbbb-cn`、repository `mcp_ssh_exec_cmd`、workflow 文件名 `publish.yml`。**不需要任何 secret** —— workflow 用短期的 GitHub OIDC token 换取发布 token |
 | npmjs.org（兜底） | `NPM_TOKEN` | 仓库 secret（*Settings → Secrets and variables → Actions*）。必须是 **granular** token，对 `@xlbbb-cn` scope 有 *Read and write* 权限，并且打开 **Bypass 2FA** —— 普通用户 token 会让 npm 报 `EOTP`（要求一次性密码）。只在 trusted publisher 配好之前需要 |
+| MCP Registry | GitHub OIDC | workflow 内置，无需 secret：npmjs.org job 之后，`publish-mcp-registry` job 执行 `mcp-publisher login github-oidc` 和 `mcp-publisher publish`。`mcp-publisher` 的二进制版本固定在 `publish.yml` 里 —— 升级需有意为之 |
 
 `NPM_TOKEN` secret 和 trusted publisher 都没有时，npmjs.org 那个 job 会带着可操作的报错信息失败。
 

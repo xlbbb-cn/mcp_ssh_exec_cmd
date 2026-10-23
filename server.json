@@ -1,0 +1,47 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.xlbbb-cn/mcp-ssh-exec-cmd",
+  "title": "SSH Host Storage & Remote Exec",
+  "description": "Stdio MCP server for SSH host storage and remote command execution with a connection-pool monitor.",
+  "version": "0.1.2",
+  "repository": {
+    "url": "https://github.com/xlbbb-cn/mcp_ssh_exec_cmd",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/xlbbb-cn/mcp_ssh_exec_cmd#readme",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@xlbbb-cn/mcp_ssh_exec_cmd",
+      "version": "0.1.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "npx",
+      "environmentVariables": [
+        {
+          "name": "MCP_SSH_CONFIG_DIR",
+          "description": "Directory holding hosts.json and master.key (default: ~/.mcp-ssh-server).",
+          "format": "filepath",
+          "isRequired": false
+        },
+        {
+          "name": "MCP_SSH_MASTER_KEY",
+          "description": "64-hex-character AES-256-GCM master key; auto-generated into <config dir>/master.key when unset.",
+          "isSecret": true,
+          "isRequired": false
+        },
+        {
+          "name": "MCP_SSH_POOL_IDLE_MS",
+          "description": "Idle SSH connections are closed after this many milliseconds (default: 60000, 0 disables pooling).",
+          "isRequired": false
+        },
+        {
+          "name": "MCP_SSH_POOL_MAX_HOSTS",
+          "description": "Maximum number of pooled SSH connections (default: 32).",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

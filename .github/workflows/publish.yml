@@ -1,8 +1,13 @@
 name: Publish to GitHub Packages and npmjs
 
-# Publishes the package to two registries:
+# Publishes the package to three places:
 #   * GitHub Packages - https://npm.pkg.github.com  (GITHUB_TOKEN)
 #   * npmjs.org       - https://registry.npmjs.org (trusted publishing)
+#   * MCP Registry    - https://registry.modelcontextprotocol.io
+#                       (server.json metadata, GitHub OIDC - runs after
+#                       the npmjs.org job because the registry verifies
+#                       the mcpName marker by reading the package from
+#                       registry.npmjs.org)
 #
 # GitHub Packages uses the built-in GITHUB_TOKEN, so nothing has to be
 # stored in the repository for it.
@@ -163,6 +168,58 @@ jobs:
             fi
             if grep -qi "unable to authenticate\|ENEEDAUTH\|404 Not Found" publish.log; then
               echo "::error::npmjs.org rejected the credentials. Either the NPM_TOKEN secret is wrong, or no trusted publisher is configured for this package (npmjs.com > Packages > @xlbbb-cn/mcp_ssh_exec_cmd > Settings > Trusted publishing)."
+            fi
+            exit $code
+          fi
+
+  publish-mcp-registry:
+    name: Publish to the official MCP Registry
+    runs-on: ubuntu-latest
+
+    # The registry verifies npm package ownership by reading mcpName
+    # from the package on registry.npmjs.org, so this job must run
+    # after the npmjs.org publish.
+    needs: publish-npmjs
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Pinned so an upstream CLI change cannot break the release
+      # pipeline unannounced - bump it deliberately and re-validate.
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          sudo install -m 755 mcp-publisher /usr/local/bin/mcp-publisher
+
+      - name: Keep server.json in sync with package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.json.tmp
+          mv server.json.tmp server.json
+          echo "server.json version -> $VERSION"
+
+      - name: Validate server.json
+        run: mcp-publisher validate ./server.json
+
+      - name: Authenticate (GitHub OIDC)
+        if: ${{ !inputs.dry_run }}
+        run: mcp-publisher login github-oidc
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set +e
+          mcp-publisher publish ./server.json 2>&1 | tee publish-registry.log
+          code=${PIPESTATUS[0]}
+          set -e
+          if [ $code -ne 0 ]; then
+            if grep -qiE "already exists|already published|duplicate|conflict" publish-registry.log; then
+              echo "::notice::this server.json version is already in the MCP Registry - nothing to do."
+              exit 0
+            fi
+            if grep -qi "permission" publish-registry.log; then
+              echo "::error::the OIDC token was not granted the io.github.xlbbb-cn namespace. Check that the registry's GitHub auth maps this repository's owner (xlbbb-cn) to the namespace used in server.json."
             fi
             exit $code
           fi
